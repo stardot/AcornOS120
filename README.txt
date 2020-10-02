@@ -86,3 +86,10 @@ appropriate !BOOT file)
 
 The OS 1.20 binary is generated in a file called MOS1_20 on disk 2
     (this has a MD5SUM of 0a59a5ba15fe8557b5f7fee32bbd393a)
+
+Acknowledgements:
+=================
+
+Many thanks to Stuart Swales and Paul Fellows (ex Acornsoft) for
+discovering these long-lost sources and making them available to the
+Acorn community.
