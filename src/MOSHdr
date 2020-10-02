@@ -1,6 +1,6 @@
 ; > MOSHdr
 
-        GBLL    Tutu
+        GBLL    $Tutu
 $Tutu   SETL    1=0
 
         LNK     MOS00

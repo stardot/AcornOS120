@@ -10,7 +10,7 @@ get font
 N&6000
 *dir x
 get mos01
-74
+76
 N&6000+&0300
 get mos99
 
