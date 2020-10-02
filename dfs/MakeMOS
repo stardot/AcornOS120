@@ -1,0 +1,28 @@
+*|> MakeMOS
+*turmasm
+width 78
+length 127
+stop on
+asm MOSHdr
+
+*drive 1
+*dir $
+get font
+
+N&6000
+*drive 2
+*dir x
+get mos01
+76
+N&6000+&0300
+get mos99
+
+N&6000+&3C00
+*dir $
+save MOS1_20
+&6000
+&6000+&4000
+&C000
+T
+
+*| Real OS 1.20 built onto wdfs
