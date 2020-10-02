@@ -1,0 +1,271 @@
+; MOS54
+ TTL MOS54         SPEECH DRIVING
+ OPT MOS54
+;(c) 1981 ACORN Computers Limited
+;BBC Microcomputer Machine Operating System (MOS)
+;Change record:
+;004 07-Nov-81 PBM    Prototype version
+;Author(s):
+;Paul Bond
+
+
+SRINIT  ;initialise SEROM environment for CFS
+ LDAIM &F0-&01 ;$01 adjusts for future INC SEROM
+; SEROM will cycle $F0 ... $FF ... $00 ... $10 (max)
+ STA SEROM
+ RTS
+
+
+SRNEXT  ;move on to next SEROM
+;
+; scans phrase ROM first, then paged ROM
+;
+SPCPYF  ;entry point from failed copyright message test
+ LDXIM SVISFS
+ INC SEROM
+ LDY SEROM
+ BPL SPSV ;[process paged ROM, V not altered]
+;
+; process PHROM, V not altered
+;
+; no need to check for speech chip present
+; reads from chip will not indicate copyright message
+;
+; check for existence of speech SEROM
+;
+; set pointer to 1
+;
+ LDXIM ZERO
+ STX ROMPTR+&01
+ INX ;X := 1
+ STX ROMPTR+&00
+ JSR SPLOAD ;set address
+;
+; check for copyright <NUL>(C)
+;
+ LDXIM &03
+SPCPY  ;V not altered
+ JSR RDBYTE ;does not alter X
+ CMPAX COPYR
+ BNE SPCPYF ;[failed test for copyright message]
+; C=1
+ DEX
+ BPL SPCPY
+;
+; C=1
+;
+; copyright message is present
+;
+; we have read 5 bytes so far
+; skip more bytes allowing for copyright/title strings
+;
+; position serial ROM to cassette image data
+; (indirect pointer held at offset $3E)
+;
+ LDAIM &3E
+ STA ROMPTR+&00
+;
+; C=1
+;
+SPLIND  ;load address indirect, V not altered, returns C=0
+ JSR SPLOAD
+ [ TRUE=0
+; perform soft version of read-and-branch
+;
+ LDXIM &FF
+RABLP
+; read lo byte when X=0, hi byte when X=1
+ JSR RDBYTE ;does not corrupt X
+;
+ LDYIM &08
+RABLO  ;reverse bits in A into ROMPTR+(0/1)
+ ASLA
+ RORAX ROMPTR+&01
+ DEY
+ BNE RABLO ;[process 8 bits]
+;
+ INX
+ BEQ RABLP ;repeat loop once more with X=0
+;
+ CLC ;indicate next successful
+ BCC SPLOAD ;[ALWAYS jump, set indirected address AND return]
+ |
+ LDYIM SPOPBR ;correct to read and branch instruction
+ JSR WSPECH ;set address via read and branch
+;
+; delay approximately 240 microsec
+;
+ LDYIM  96
+SPDLAY
+ DEY
+ BNE SPDLAY ;[wait a bit]
+;
+ CLC ;next successful
+ RTS
+ ]
+
+
+RDSPCH  ;read byte from SEROM
+ LDXIM SVRSFS
+ LDY SEROM
+ BMI RDBYTE ;[reading from PHROM, V not altered]
+;
+; reading from paged ROM
+;
+ LDYIM  0-MCVER ;enter paged ROM with M/C indicator in Y
+;
+SPSV  ;used by read byte routine, V not altered
+ PHP
+ JSR SVOP ;search for paged SEROM (N.B. SVOPSP)
+;
+ PLP ;restore V-flag
+ CMPIM &01 ;claimed => C=0,  not claimed => C=1
+ TYA ;A := read character (useful for read byte routine only)
+ RTS
+
+
+RDBYTE  ;read byte from speech ROM, V not altered
+ PHP
+ SEI
+ LDYIM SPOPRB ;set to read byte
+ JSR WSPECH
+; read byte (following code shorter than JSR RSPECH; PLP; RTS)
+ LDYIM ZERO
+ BEQ SENDSX ;[ALWAYS JUMP, N.B. does PLP & RTS, SEI already active]
+
+
+RSPECH  ;read from speech processor, must not corrupt X
+ LDYIM ZERO
+ BEQ SENDSP ;[ALWAYS jump]
+;
+;
+SPL  ;send load address nibbles
+; A = hl
+; h is hi-nibble
+; l is lo-nibble
+ PHA
+ JSR SPL1 ;send lo-nibble
+ PLA
+ RORA
+ RORA
+ RORA
+ RORA
+;
+; send hi-nibble
+;
+SPL1
+ ANDIM &0F ;isolate lo-nibble
+ ORAIM SPOPLA
+;
+ TAY ;Y := command
+;
+WSPECH  ;write to speech processor, must not corrupt X
+ TYA ;A := command
+ LDYIM &01
+;
+SENDSP  ;read/write from/to speech processor
+; Y=0 => read
+; Y=1 => write
+ PHP
+ SEI
+SENDSX  ;entry used by routines which have done a PHP & SEI
+ BIT SPFLAG
+ BPL SNDSX0 ;[speech chip not present]
+;
+ PHA ;save command
+;
+; select PA7-0 as inputs/outputs
+;
+ LDAAY SENDD
+ STA DDRAQ
+;
+; place command onto data bus
+;
+ PLA ;restore command
+ STA PAPQ
+;
+; speech enable
+;
+ LDAAY SENDS
+ STA PBQ
+;
+; wait for speech ready
+;
+SPWAIT
+ BIT PBQ
+ BMI SPWAIT ;[not ready]
+;
+; read possible speech data
+;
+ LDA PAPQ
+ PHA
+;
+; speech disable
+;
+ LDAAY SENDF
+ STA PBQ
+;
+; return
+;
+ PLA ;restore speech data (not relevant if write)
+;
+SNDSX0
+ PLP
+ TAY ;set processor status flags (useful for RSPECH) and Y (for FX calls)
+ RTS
+
+
+SRSKIP  ;skip to SEROM pointer indicated by SRPTR
+ LDA SRPTR+&00
+ STA ROMPTR+&00
+ LDA SRPTR+&01
+ STA ROMPTR+&01
+ LDA SEROM
+ BPL SRSK0 ;[skipping within paged ROM]
+;
+; skipping within speech SEROM
+; load address from SEROM/ROMPTR
+;
+SPLOAD  ;load address, must not corrupt V
+; address given in SEROM/ROMPTR
+ PHP
+ SEI ;N.B. uses SPWK1
+ LDA ROMPTR+&00
+ JSR SPL ;send address lo-byte
+ LDA SEROM
+ STA SPWK1
+ LDA ROMPTR+&01
+ ROLA
+ ROLA
+ LSR SPWK1
+ RORA
+ LSR SPWK1
+ RORA
+ JSR SPL ;send address hi-byte
+ LDA SPWK1
+ JSR SPL1 ;send address hi-nibble
+ PLP
+SRSK0
+ RTS
+
+
+ [ FALSE=0
+; historic code - ignore
+ LDY ROMID
+ EORIM &0F
+ JSR STAROM
+ LDXIM ZERO
+ LDAIX ROMPTR
+ STY ROMID
+ STY ROM
+ INC ROMPTR+&00
+ BNE S1
+ INC ROMPTR+&01
+S1
+ ]
+
+
+ < &0001
+
+
+ LNK MOS56

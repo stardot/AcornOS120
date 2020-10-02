@@ -1,0 +1,211 @@
+ TTL C.F.S. Manifest File - MOS70
+ OPT &01
+
+MOS70 * DEFOPT
+MOS72 * DEFOPT
+MOS74 * DEFOPT
+MOS76 * DEFOPT
+
+ OPT MOS70
+
+ < &0003
+ > &0002
+
+
+;****** C.F.S HEADER FILE ******
+
+
+
+;cIOBYTS * $00 ;No longer used
+LENSW * &00 ;Zero => LOAD modify's OSFILE block
+DEBUG * &01 ;zero => messages. +ve => no messages
+TUBESW * &00 ;Zero => tube, +ve => no tube
+PREMRG * &FF ;Zero => entry indirections, +ve => none
+GLYN * &FF ;Zero => special IBG code for
+;Glynn. +ve => as per spec.
+
+;MANIFESTS
+
+ENDBYT * &FE ;Byte after end of file (GETBYT)
+
+FXCDRV * &0091 ;FX call number
+READFX * &FF
+WRITFX * &00
+
+INHAND * &0001 ;Input handle
+OUTHND * &0002 ;Output handle
+HNDS * &03 ;Both handles
+NOUTHD * &FD
+FTSIZE * &000B ;File title size (incl. CR)
+
+;Note that the 6850 status bytes (following)
+;have their bottom nybble modified according to
+;the setting of SPEED in the routines RXINIT and TXINIT
+
+TXSTAT * &30 ;6850 TX status
+;TXSTAT = ~RTS lo;TXI enabled;8 bits + 1 stop
+RXSTAT * &D0
+;RXSTAT = ~RTS hi;TXI disabled;8 bits + 1 stop
+
+TXBIT * &02
+RXBIT * &01
+DCDBIT * &04
+
+SERON * &85 ;Motor on/cass. on/RXCLK=0/TXCLK= 1,0,1
+SEROFF * &05 ;As SERON but motor off
+;ERRORS
+
+ERRBAS * &DF
+
+CFSERD * ERRBAS -&00 ;EOF
+CFSERB * ERRBAS -&01 ;Channel
+CFSERK * ERRBAS -&02 ;Address
+SYNXER * ERRBAS -&03 ;Syntax
+CFSERF * ERRBAS -&04 ;File
+CFSERH * ERRBAS -&05 ;Block
+CFSERI * ERRBAS -&06 ;Header
+CFSERJ * ERRBAS -&07 ;Data
+CFSERR * CFSERJ ;Bad tape
+
+SFSERR * ERRBAS -&08 ;Bad ROM
+SFSER1 * ERRBAS -&09 ;File not found
+
+CFSERL * ERRBAS -&0A ;Locked
+
+
+;STATUS BYTE MASKS
+
+INOPEN * &01
+OUTOPN * &02
+LSTBYT * &40 ;Last byte read (GETBYTE)
+EOFBIT * &80 ;Last byte +1 read (GETBYTE)
+LSTEOF * &C0 ;Last byte & EOF
+
+NCTBIT * &F7 ;Complement of CATBIT
+NEFBIT * &3F ;Complement of EOFBIT/lastbyte
+NINHND * &FE ;Complement of INHAND
+NECBIT * &3E ;Complement of EOFBIT/lastbyte/openin bit
+
+
+
+;MESSAGE/ERROR SELECTION MASKS
+
+
+ERRMSK * &CC ;Error bits to zero
+MSGMSK * &33 ;Message bits to zero
+MSGS1 * &88 ;Short messages
+MSGS2 * &CC ;Long messages
+
+ABTBIT * &11 ;Abort set
+RETBIT * &22 ;Retry set
+IGBIT * &00 ;Both error bits off => ignore
+NIGBIT * &30 ;Complement of ignore bits
+
+DEFLT * &A1
+
+;Default is retry/messages for loaded and saved
+;files, abort/no messages for sequential files.
+
+
+;INFO FIELDS
+
+BKINFO * FTSIZE +&01
+BKLOAD * BKINFO
+BKLDLO * BKLOAD
+BKLDHI * BKLDLO +&01
+BKEXEC * BKLOAD +&04
+BKNOLO * BKEXEC +&04
+BKNOHI * BKNOLO +&01 ;Block no. (lo & hi)
+BKSZEL * BKNOHI +&01
+BKSZEH * BKSZEL +&01
+BKFLAG * BKSZEH +&01 ;b7 => last block
+BKSPAR * BKFLAG +&01
+BKLAST * BKSPAR +&04 ;Length of info.
+
+BKWORKK * BKLAST
+BKWRK1 * BKWORKK +&01
+BKWRK2 * BKWRK1 +&01
+
+
+
+
+;BLOCK FLAG MASKS
+
+LASTBK * &80 ;NOTE - don't change, BMI and BVS etc. used
+
+
+
+;TIMES
+
+DEFGAP * &19 ;25/10 Secs inter block gap
+GAP * &06 ;SAVE/LOAD gap
+
+
+;BITS AND PIECES
+
+
+
+
+CATBIT * &08 ;Doing a CAT
+MONBIT * &88 ;Messages on/off
+
+
+INBSZE * CFSA ;GBYT block size (retained over FS change)
+BUFFLG * INBSZE +&02 ;Note BUFFLG & INBZSE must be contig.
+
+FINBYT * CFSD ;Last byte in GETBYT buffer
+
+;BUFFERS
+
+INBUFR * &0A00
+OUTBFR * &0900 ;Sequential access I/O buffers
+
+;VARS
+
+VARSS * &0380
+VARPGE * &0300
+
+OUTHDR * VARSS  ;Header buffer for PUTBYTE
+OUTPTR * OUTHDR +BKLAST
+INPTR * OUTPTR +&01
+INLDEX * INPTR +&01 ;8 bytes load/exec for input file
+INFILE * INLDEX +&08 ;GETBYTE file name
+INFO * INFILE +FTSIZE ;Header buffer
+WORKK * INFO +BKWORKK ;Space to read CRC during RDHEAD
+SEQGAP * WORKK +&02
+FILNAM * SEQGAP +&01
+NEXTIN * FILNAM +FTSIZE ;Next expected block (GETBYTE)
+OLDFLG * NEXTIN +&02
+
+SRPTR * INFO +BKSPAR
+
+
+;CHIP LOCATIONS
+
+STATUS * &FE08
+PORT * &FE09
+
+
+
+;DOS/MOS ROUTINES & ADDRESSES
+
+
+ESCADD * &00FF ;b7 = 1 if ESCAPE occured
+
+
+;TUBE THINGS
+
+TUBER * &00 ;Value in A for tube READ initialisation
+TUBEW * &01 ;Value in A for tube WRITE initialisation
+TUBEX * &04 ;Value in A for tube execute
+
+TUBERL * &80 ;A reg. for tube RELEASE
+TUBECL * &C0 ;A reg. for tube CLAIM
+
+SFSEND * "+" ;Marker for end of SERROM
+
+; interface to code in MOS
+;
+
+
+ LNK MOS72

@@ -1,0 +1,952 @@
+; FILE -> MOS72
+
+START
+
+ TTL C.F.S. Main Routines - INIT
+ OPT MOS72
+
+
+CROM  ;A=$8D, V=0
+TAPE  ;A=$8C, V=0
+ EORIM &8C
+TAPE12  ;used by RESET, A=X=$00
+ ASLA
+ STA SROMSW ;A=0 => *TAPE,  A=2 => *ROM
+ CPXIM &03 ;test for *TAPE3
+ JMP SOFTPT ;[ALWAYS jump]
+
+
+INIT
+
+;Initialises CLI and file operation
+;vectors. Motor turned OFF
+
+;Z set => 300 baud => speed nybble = 6
+;Z unset => 1200 baud => speed nybble = 5
+
+;Speed nybble is OR'd in with
+;6850 status byte during TX/RXinit
+
+ PHP
+ LDAIM DEFLT
+ STA OPTS ;User status = retry & msgs on
+ LDAIM DEFGAP
+ STA SEQGAP
+ PLP
+
+;Note CFSTAT (CFS0) set to zero by MOS free of charge
+;on hard reset
+
+SOFTPT  ;Soft entry point (*TAPE)
+ PHP
+ LDAIM FSDIE
+ JSR JMIFSC ;present command to file system
+ LDXIM &06
+ PLP
+ BEQ INITON
+ DEX
+INITON STX SPEED
+;
+; initialise filing system indirection table
+;
+ LDXIM &0E
+INITLP LDAAX CFSTAB -&01
+ STAAX FILVEC -&01
+ DEX
+ BNE INITLP
+ STX ITYPE ;No i'rupts pending
+;
+; inform paged ROMs of change
+;
+ LDXIM SVFSIC
+;
+SVOP  ;issue service ROM operati
+; optype in X
+ LDA ROMID ;save current ROM id
+ PHA
+ TXA ;A = optype
+;
+ LDXIM NROM-&1
+SVOP1
+ [ $Tutu ; Less farting about with page 02
+        BITAX   ROMS            ; Test ROMS
+        BPL     SVOP2           ; [not a service ROM]
+        NOP
+        NOP
+        NOP
+ |
+ INCAX ROMS ;test
+ DECAX ROMS ;ROMS
+ BPL SVOP2 ;[not a service ROM]
+ ]
+; found a service ROM
+ STX ROMID
+ STX ROM
+; call service routine
+ JSR ROMSFT ;initialise service ROM
+ TAX
+ BEQ SVOP3 ;[service claimed, do not offer to other ROMs]
+;
+ LDX ROMID ;restore ROM id
+SVOP2
+ DEX
+ BPL SVOP1
+; X<>0
+SVOP3  ;C = return code
+; restore caller's ROMid
+ PLA
+ STA ROMID
+ STA ROM
+; restore return code
+ TXA ;A=0 => claimed,  A<>0 => not claimed
+ RTS
+
+
+ TTL C.F.S. Main Routines - ARGGO
+ OPT &01
+
+
+;Returns 1 if in 1200 baud cassette
+;2      300
+;3 if in SERROM filing system
+
+;Note SPEED is 5 if in 1200 and 6 in 300
+
+
+ARGGO
+ ORAIM  0
+ BNE INTRTS ;No action on non-zero entry condition
+ CPYIM &00
+ BNE INTRTS ;If handle not zero -> don't do
+ LDA SPEED
+ ANDIM &FB ;Subtract 4
+ ORA SROMSW
+ ASLA
+ ORA SROMSW
+ LSRA ;Uses the fact that SROMSW is either 0 or 2
+INTRTS RTS
+
+
+ TTL C.F.S Main Routines - FSFUNC
+ OPT &01
+
+JMPTAB
+ & CFSOPT-&01
+ & CFSEOF-&01
+ & RUN-&01 ;"*.<string>"
+ & MBDCMD-&01 ;"*<string>" = Bad command
+ & RUN-&01 ;"*RUN <string>"
+ & CAT-&01
+ & SHUTES-&01 ;die
+NOTAB * .-JMPTAB:SHR: 1
+
+FSFUNC
+
+;File system operation entry pt.
+
+ CMPIM NOTAB
+ BCS INTRTS ;Check call legal otherwise, exit
+
+ STX TEMP
+ ASLA
+ TAX  ;Get address from table
+ LDAAX JMPTAB +&01
+ PHA ;push hi byte
+ LDAAX JMPTAB
+ PHA ;push lo byte
+ LDX TEMP ;Restore argument
+ RTS ;enter routine
+
+ TTL C.F.S. Main Routines - LOAD
+ OPT &01
+
+
+;***********
+;* L O A D *
+;***********
+
+
+;On entry A NZ => load from OSFILE
+;         A =0 => load and run
+;Differentiating between these is necessary
+;so that the protection bit in the flags
+;byte can be checked.
+
+
+LOADGO
+
+ PHP  ;Store interrupt status
+ PHA ;Store indication of load or load/run
+ JSR SETDEF ;Set defaults if nesc.
+
+ LDA INFO +BKEXEC
+ PHA  ;EQ=> use addr. from C.line or OSFILE
+
+ JSR SRCH0 ;Find file on tape.
+LOADL6
+
+ PLA
+ BEQ LOADLB ;Use load address from command line or OSFILE
+
+;Move load address from OSFILE command block
+;and check if is $FFFFFFFF, in which case
+;give BAD ADDRESS error
+
+ LDXIM &03
+ LDAIM &FF
+LOADL1 PHA  ;Push cumulative AND of address
+ LDAAX INFO +BKLOAD ;Address from command block
+ STAAX BKADDR
+ PLA
+ ANDAX BKADDR
+ DEX
+ BPL LOADL1
+
+ CMPIM &FF ;If $FF, all bytes are $FF => error
+ BNE LOADLB ;Continue load
+
+ JSR BEEPOF ;Motor off/beep
+ JMP MBADHX
+
+LOADLB LDA INFO +BKFLAG ;Check protection bit
+ LSRA  ;CS -> prot. CC -> unprot
+ PLA  ;Check if loading and running
+ BEQ LOADLC ;Yes => carry on
+ BCC LOADLA ;Not protected -> carry on
+
+PROTER JSR CASMOF ;Turn motor off
+;Also called from RDBFER
+
+ BRK
+ = CFSERL
+ = "Locked"
+ = &00
+
+LOADLC
+ BCC LOADLA ;Loading/running & unprotected
+ LDAIM &03
+ STA CRIT ;Loading/running & prot., so disable ESCAPE and trap BREAK
+LOADLA
+ LDAIM NIGBIT
+ AND USFLGS
+ BEQ LOADL8 ;If ignore set, just read block
+ LDA HDRCRC ;Check hdr. checksum
+
+;Don't start bg job if header CRC is no good,
+;otherwise data may be loaded somewhere strange
+
+ BNE LOADL7
+LOADL8 TYA
+ PHA ;Store "Loading" flag
+ JSR TWINIT ;Initialise tube for writing if nesc.
+ PLA
+ TAY ;Restore "Loading" flag
+ JSR RDBLOK
+LOADL7 JSR LODHDR ;Print header and error msgs.
+ BNE LODRTR ;=> retry
+
+ JSR NXTBLK ;Next block := blk. found + 1
+ BIT INFO +BKFLAG
+ BMI LOADEX ;Just loaded last block => finish
+
+ JSR ADDBKA ;Add block size to BKADDR
+
+ JSR RDHEAD
+ BNE LOADLA ;Always jump
+
+LOADEX
+ [ LENSW =0;Alter OSFILE control block
+ LDYIM &0A ;Length offset in OSFILE block
+ LDA FSIZE ;File size set in PRTHDR
+ STAIY GENPTR ;Note GENPTR kept from OSFILE
+ INY
+ LDA FSIZE + 1
+ STAIY GENPTR
+ LDAIM &00 ;Set high bytes of length = 0
+ INY
+ STAIY GENPTR
+ INY
+ STAIY GENPTR
+ ]
+
+ PLP  ;Restore interrupt status
+
+FINOP
+
+ JSR BEEPOF ;Motor OFF/BEEP
+
+NOOLN1 BIT ERRSW ;If error taken place, already new line
+ BMI FINOPX
+NOOLIN PHP
+ JSR MSGOUT
+ = MCR
+ = &00 ;Print new line if msgs on
+ PLP
+FINOPX RTS
+
+
+LODRTR JSR SEARCH ;Search for current block (BLOKNO)
+ BNE LOADLA ;Try and reload data
+
+
+
+ TTL C.F.S. Main Routines - FILEGO
+ OPT &01
+
+
+GETFLN
+
+;X/Y -> start of  file name
+
+
+MOVFT
+
+;Moves file title from ptr. pointed to by X,Y (lo,hi)
+;to FILNAM.
+
+; SEI
+ STX WORK
+ STY WORK +&01
+ LDYIM &00
+ JSR GSINTC ;Initialise
+ LDXIM &00
+MOVFTL JSR GSREAD
+ BCS MOVFTX
+ BEQ STRERR
+ STAAX FILNAM
+ INX
+ CPXIM FTSIZE
+ BNE MOVFTL
+
+STRNG0
+STRERR JMP BADSTR
+
+MOVFTX LDAIM &00
+ STAAX FILNAM
+; CLI
+ RTS
+
+
+FILEGO
+
+;Entry here from OSFILE.
+
+ PHA  ;Store load/save indication
+ STX GENPTR
+ STY GENPTR +&01
+
+ LDYIM &00
+ LDAIY GENPTR
+ TAX  ;Set ptr. to file name for MOVFT
+ INY
+ LDAIY GENPTR
+ TAY
+
+ JSR MOVFT ;File title -> FILNAM
+ LDYIM &02
+FILELP LDAIY GENPTR
+ STAAY INFO +BKLOAD -&02 ;Set LOAD/EXEC address in header buffer
+ STAAY BKADDR -&02 ;Optional load address stored for LOAD
+ INY
+ CPYIM &0A ;Ten coz 2*4 + 2 initially
+ BNE FILELP
+
+ PLA
+ BEQ FILEL2
+ CMPIM &FF
+ BNE FINOPX ;If not Load -> return
+ JMP LOADGO ;Else so load
+
+;Now doing save
+
+FILEL2 STA INFO +BKNOLO ;Set block number in header
+ STA INFO +BKNOHI ;while A is zero
+FILEL3 LDAIY GENPTR
+ STAAY BKADDR -&0A ;BKADDR := data start
+ INY  ;Also sets HIADDR which
+;must be contiguous with BKADDR
+ CPYIM &12
+ BNE FILEL3
+
+ TXA  ;X preserved from MOVFT
+ BEQ STRNG0 ;Drops through to SAVE if string OK
+
+
+ TTL C.F.S Main Routines - SAVE
+ OPT &01
+
+;***********
+;* S A V E *
+;***********
+
+
+
+;Entry here from OSFILE call
+
+ JSR SETDEF
+
+ JSR RECORD ;Prompt and motor ON
+
+ [ TUBESW=0
+ LDAIM TUBER ;initialise tube for reading
+ JSR TBINIT
+ ]
+
+ JSR BUGFIX ;Put out extra char
+
+SAVELP SEC
+ LDXIM &FD
+SAVEL1 LDAAX HIADDR -&FD
+ SBCAX BKADDR -&FD
+ STAAX INFO +BKSZEL-&FD ;Note corrupts Flags byte
+ INX
+ BNE SAVEL1 ;Do HIADDR - BKADDR
+ TAY
+ BNE SAVEL2 ;Msb non-zero => not last block
+
+;Now: IF $0100 < block size THEN block size := $0100,
+;                                not last block
+;                           ELSE last block
+
+ CPX INFO +BKSZEL ;Note X = 0
+ LDAIM &01
+ SBC INFO +BKSZEH
+ BCC SAVEL2 ;$0100 < block size, continue
+
+ LDXIM LASTBK ;Else, indicate last block
+ BNE SAVEL3 ;And block size correct in INFO area
+
+SAVEL2 LDAIM &01
+ STA INFO +BKSZEH ;Default block size = $0100
+ STX INFO +BKSZEL ;X always zero
+SAVEL3 STX INFO +BKFLAG
+
+ JSR WRBLOK ;Write out data + header
+ BMI SAVFIN ;Last block => finished
+
+ JSR ADDBKA ;Add block size to address
+
+ INC INFO +BKNOLO
+ BNE SAVELP
+ INC INFO +BKNOHI ;Inc. block no. for next time
+ BNE SAVELP ;Assumed always +ve
+
+
+
+ TTL C.F.S. Main Routines - RUN
+ OPT &01
+
+RUN
+ JSR GETFLN
+ LDXIM &FF
+ STX INFO +BKEXEC ;=> load at file's load address
+
+;Note, is assumed here that A = 0 from GETFLN
+;since LOADGO tests A
+
+ JSR LOADGO ;Load file from tape
+ [ TUBESW=0
+ BIT TUBE
+ BPL NOTUB1 ;No tube - jump to IO proc. address
+
+ LDA INFO +BKEXEC +&02 ;Check if execution address
+ AND INFO +BKEXEC +&03 ;of file is accross tube
+ CMPIM &FF
+ BNE RUNL1 ;Yes, set up tube call
+NOTUB1 JMI INFO +BKEXEC ;No, just jump
+
+RUNL1 LDXIM INFO +BKEXEC ;Point to exec. address
+ LDYIM /(INFO +BKEXEC )
+ LDAIM TUBEX ;=> execute to tube
+ JMP TBINT1 ;Claim tube and jump to address
+ |
+ JMI INFO +BKEXEC ;If no tube, just jump
+ ]
+
+
+ TTL C.F.S Main Routines - CAT
+ OPT &01
+
+
+;*********
+;* C A T *
+;*********
+
+
+
+CAT
+
+;Entered from MOS with two args
+;in X and Y as per OPT. These are not used.
+
+ LDAIM CATBIT
+ JSR ORSTAT
+ JSR SETDEF ;Set message type etc.
+ LDAIM &00 ;Indicate verify only
+ JSR LOOK ;In CFS, will never return
+;In SFS, will return
+ JSR RELEAS ;So in SFS release RS423
+;NOTE - only release call outside CASMOF
+
+
+CATOFF LDAIM NCTBIT
+
+ANDSTA AND CFSTAT
+ANDSTB STA CFSTAT
+
+SAVFIN  ;Exit from SAVE
+ RTS
+
+ORLST
+ LDAIM LSTBYT
+;
+ORSTAT ORA CFSTAT
+ BNE ANDSTB ;Assumed always non-zero
+
+
+
+
+
+LOOK PHA
+ LDA SROMSW
+ BEQ LOOKLR ;No SFS -> don't call SFS routines
+
+ JSR SRINIT ;Initialise SERROM ptr.
+ JSR SRNEXT
+ BCC LOOKLR
+
+ CLV ;Indicate end of rom to outside world
+ BVC LOOKEX
+
+LOOKLR JSR RDHEAD
+ LDA INFO +BKNOLO
+ STA BLOKNO
+ LDA INFO +BKNOHI
+ STA BLOKNO +&01
+ LDXIM &FF
+ STX OLDFLG
+ INX
+ STX ERRSW
+ BEQ LOOKL5 ;Always new line
+
+LOOKL1 JSR NXTBLK ;Blokno := INFO +BKNO + 1
+
+ JSR RDHEAD ;Read header
+LOOKL5 LDA SROMSW
+ BEQ LOOKL7
+
+;Check V from RDHEAD
+
+ BVC LOOKEX ;In SFS and VC => end of all ROMs
+
+LOOKL7 PLA
+ PHA  ;Check if just verifying
+ BEQ LOOKL4 ;If just verifying, continue
+ JSR CMPFT ;Otherwise, check file titles
+ BNE LOOKL2 ;Not the same, continue
+ LDAIM NIGBIT
+ AND USFLGS
+ BEQ LOOKEX ;If ignore set, just exit
+
+ LDA INFO +BKNOLO ;Otherwise, check block no.
+ CMP SRCHBK
+ BNE LOOKL2 ;Not found ...
+ LDA INFO +BKNOHI
+ CMP SRCHBK +&01
+ BNE LOOKL2
+LOOKEX PLA
+
+;On exit, V indicates in CFS if header
+;interrupted by DCD. In SFS, indicates
+;if end of ROM filing system reached.
+
+ RTS
+
+LOOKL2
+
+;Here, file not recognised. In CFS, just
+;carry on reading next block. In SFS,
+;skip to block zero of next file.
+
+ LDA SROMSW
+ BEQ LOOKL4 ;In CFS, carry on
+LOOKL8 JSR SRSKIP ;Not recognised => skip
+LOOKLA LDAIM &FF
+ STA INFO +BKNOLO ;Look for block zero of next file
+ STA INFO +BKNOHI
+ BNE LOOKL1
+
+LOOKL4 BVC LOOKL3 ;Header interrupted
+ LDAIM &FF
+ JSR CHKBIN ;Check data
+
+LOOKL3 LDXIM &00
+ JSR CATERR ;Print errors and header
+
+ LDA SROMSW
+ BEQ LOOKL9 ;In CFS -> continue
+ BIT USFLGS
+ BVC LOOKL8 ;=> short msgs and skip beween files
+
+LOOKL9 BIT INFO +BKFLAG
+ BMI LOOKLA ;Look for block zero
+ BPL LOOKL1 ;Look for next block
+
+
+ TTL C.F.S Main Routines - FIND
+ OPT &01
+
+;****** SEQUENTIAL ACCESS ******
+
+
+
+;***********
+;* F I N D *
+;***********
+
+
+FIND   ;FIND
+
+
+;Entered from OSFIND:
+
+;A NZ => open
+;b6 => file already exists and opened for read/ud
+;A EQ => shut
+
+;For open: X,Y -> file name lo,hi
+
+;For shut: Y = handle. If zero, all files shut.
+
+
+
+ STA TEMP
+ TXA
+ PHA
+ TYA
+ PHA
+ LDA TEMP
+ BNE FINDON
+
+ TYA
+ BNE SHUTL1 ;Y non-zero => shut one file
+;
+ JSR SHUTES ;shut EXEC and SPOOL files opened by CFS
+ JSR SHUTW ;Else shut write file
+; Shut read file and exit
+SHUTR LSR CFSTAT
+ ASL CFSTAT ;Note assumes input bit = b0
+; C=0
+ BCC JFINDEX ;[ALWAYS jump]
+;
+;
+SHUTL1 LSRA
+ BCS SHUTR ;Shut input file
+ LSRA
+ BCS SHUTL2 ;Shut output file
+
+ JMP HNDERR ;Invalid handle
+
+SHUTL2 JSR SHUTW
+JFINDEX
+ JMP FINDEX
+
+
+
+FINDON JSR MOVFT
+
+ BIT TEMP
+ BVC FINDO ;Find for output if b.6 = 0
+
+;Opening files already open
+;is the same as if not already open
+
+
+;Open for reading
+;Set handle and read in first buffer
+
+ LDAIM &00
+ STA INPTR ;Set buffer ptr. := 0
+ STA NEXTIN
+ STA NEXTIN +&01 ;Set expected block := 0
+
+ LDAIM NECBIT ;End of file/last byte unset/input file closed
+ JSR ANDSTA
+
+ JSR SETSDF ;Set seq. access default
+
+ PHP  ;Store interrupt status
+ JSR SRCH0 ;Find file, first block.
+ JSR RDBFRS ;Check hdr. read ok, and get first bfr.
+ PLP  ;Restore interrupt status
+
+ LDXIM &FF
+FINDL5 INX ;Make file name found = file name
+ LDAAX INFO ;for subsequent block reads
+ STAAX INFILE ;so that OPENIN "" locks onto one filet block.
+ BNE FINDL5
+
+ LDAIM INOPEN
+ JSR ORSTAT
+ LDA INBSZE
+ ORA INBSZE +&01
+ BNE FINDL6 ;If non-empty, don't worry
+ JSR ORLST ;Otherwise, at end of file
+
+FINDL6 LDAIM INHAND
+ ORA SROMSW ;If in SFS, return 3
+ BNE OPENEX ;Return input handle
+
+
+
+FINDO TXA  ;Can't openout ""
+ BNE FINABC
+ JMP BADSTR
+
+FINABC LDXIM &FF
+FINDL2 INX
+ LDAAX FILNAM ;Store output file name
+ STAAX OUTHDR
+ BNE FINDL2
+
+ LDAIM &FF
+ LDXIM &08
+FINDL4 STAAX OUTHDR +BKLOAD -&01
+ DEX
+ BNE FINDL4 ;Set load/EXEC address to default value
+
+ TXA
+ LDXIM BKNOLO
+
+;Set block no./block len./last bk. =0
+;Note also sets OUTPTR which must
+;be contiguous with OUTHDR
+
+FINDL3 STAAX OUTHDR
+ INX
+ CPXIM BKLAST +&01
+ BNE FINDL3 ;Note carry set
+ ROL OUTHDR +BKSZEH ;Set hi byte of size
+
+ JSR SETDEF ;If default, print prompt
+ JSR RECORD
+ JSR CASMOF ;OFF for putbyte call
+
+ LDAIM OUTOPN
+ JSR ORSTAT ;Indicate file open for output
+
+ LDAIM OUTHND
+
+OPENEX STA TEMP
+FINDEX  ;Common exit for PUT/GETBYTE and FIND
+GBEXX PLA
+ TAY
+ PLA
+ TAX
+ LDA TEMP
+FINDXX
+ RTS
+
+
+
+
+
+
+SHUTW
+
+ LDAIM OUTHND
+ AND CFSTAT
+ BEQ FINDXX ;If already shut, dont bother
+
+ LDAIM &00
+ STA OUTHDR +BKSZEH
+
+ LDAIM LASTBK
+ LDX OUTPTR
+ STX OUTHDR +BKSZEL
+ STA OUTHDR +BKFLAG
+ JSR WRTBFR ;Write out block
+ LDAIM NOUTHD
+ JMP ANDSTA ;Mark file as closed
+
+
+WRTBFR  ;Write out buffer
+
+ JSR SETSDF ;Set sequential defaults
+
+ LDXIM BKLAST -BKLOAD
+WRTBL3 LDAAX OUTHDR +BKLOAD
+ STAAX INFO +BKLOAD
+ DEX
+ BPL WRTBL3
+
+; Set buffer address for WBLOCK call
+
+ STX BKADDR +&02
+ STX BKADDR +&03 ;Output buffer is in IO proc.
+
+T * OUTBFR:SHL: 8
+ [ T=0
+ INX
+ STX BKADDR ;If OUTBFR on page boundary, set lo byte = 0
+ |
+ LDAIM OUTBFR
+ STA BKADDR ;Else, set explicitly
+ ]
+
+ LDAIM /(OUTBFR )
+ STA BKADDR +&01
+
+ LDXIM OUTHDR -&01
+ JSR MOVFN ;File name -> FILNAM etc.
+ STA OLDFLG
+
+ JSR MOTONW ;Motor on and select output drive
+ JSR BUGFIX
+ JSR WBLOCK ;Write out block
+ INC OUTHDR +BKNOLO ;Next block
+ BNE WRTBL4
+ INC OUTHDR +BKNOHI
+WRTBL4 RTS
+
+
+
+
+
+
+
+
+ TTL C.F.S. Main Routines - GETBYTE
+ OPT &01
+
+
+;******************
+;* G E T  B Y T E *
+;******************
+
+
+GETBYT
+
+ TXA
+ PHA
+ TYA
+ PHA
+ LDAIM INHAND
+ JSR CHKHND ;Is handle open ?
+
+ LDA CFSTAT
+ ASLA
+ BCS GBEOF ;=> Going past end of file
+ ASLA
+ BCC GBLF ;=> Not getting last byte
+
+;Here indicate next GB call
+;goes off end of file
+
+ LDAIM EOFBIT
+ JSR ORSTAT
+
+;Carry still set from above
+
+ LDAIM ENDBYT ;Byte after end of file
+ BCS GBEXY
+
+GBLF LDX INPTR
+ INX
+ CPX INBSZE ;Is last byte of buffer ?
+ BNE GBLDE ;Nope -> continue
+
+
+ BIT BUFFLG ;Check if in last block. If so, are reading
+ BMI GBLH ;last byte of last block => exit
+
+;Read last byte of block. NOTE this is kept in a location
+;separate from the rest of the block buffer, so that if the
+;next block being read aborts and corrupts the block buffer,
+;a subsequent retry will still provide the last byte of the
+;previous block. The variable FINBYT is updated in RDBFER after
+;the background block read has succesfully completed.
+
+ LDA FINBYT
+ PHA ;Store final byte of this block
+ JSR SETSDF ;Set sequential defaults
+ PHP  ;Store I'rupt status
+ JSR RDBFER ;Read buffer for next GETBYTE call
+ PLP  ;Restore I'rupt status
+ PLA ;Restore final byte of previous buffer
+ STA TEMP ;Store for later use
+
+ CLC ;Prepare for non-end of file exit
+ BIT BUFFLG
+ BPL GBEXIT ;Exit, result = TEMP, carry clear
+
+ LDA INBSZE ;If here, is last block
+ ORA INBSZE +&01
+ BNE GBEXIT ;Last block, is not empty
+ JSR ORLST ;If is last block, and empty
+ BNE GBEXIT ;then this is the last byte
+;So set last byte bit and exit, C = 0
+
+GBLH
+ JSR ORLST ;Otherwise, reading last byte.
+
+;So exit, carry clear
+
+GBLDE DEX
+ CLC ;Carry clear unless byte AFTER last byte of file
+ LDAAX INBUFR ;GET BYTE !
+GBEXY STA TEMP
+GBEXIT INC INPTR ;Inc. buffer ptr. for next time
+ JMP GBEXX ;Share exit with PUTBYT
+
+GBEOF BRK
+ = CFSERD
+ = "E"
+ = "O"
+ = "F"
+ = &00
+
+ TTL C.F.S. Main Routines - PUTBYTE
+ OPT &01
+
+
+;******************
+;* P U T  B Y T E *
+;******************
+
+
+PUTBYT
+ STA IADDR
+
+;Note, IADDR not used in this
+;function coz RX interrupts are "disabled"
+;by TXFLAG (see IRUPT)
+
+ TXA
+ PHA
+ TYA
+ PHA
+ LDAIM OUTHND
+ JSR CHKHND ;Check handle open
+
+ LDX OUTPTR
+ LDA IADDR ;Restore byte to put
+ STAAX OUTBFR
+ INX
+ BNE PBEXIT ;Test if last byte of buffer
+ JSR WRTBFR ;Buffer full, write out.
+ JSR CASMOF
+
+PBEXIT INC OUTPTR
+
+;Increment pointer after writing block out so that
+;user can retry if block is interrupted
+;by ESCAPE.
+
+ LDA IADDR
+ JMP OPENEX
+
+
+
+
+ LNK MOS74

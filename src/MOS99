@@ -1,0 +1,343 @@
+; MOS99
+ TTL MOS99         Operating system ROM entry points and hardware vectors
+ OPT MOS99
+
+;(c) 1981 ACORN Computers Limited
+;BBC Microcomputer Machine Operating System (MOS)
+
+;Change record:
+
+;Author(s):
+;PB     Paul Bond
+
+ ORG &FC00
+  
+ = "(C) 1981 Acorn Computers Ltd."
+ = "Thanks are due to the following contributors to the development of the BBC Computer "
+ = "(among others too numerous to mention):- "
+ = "David Allen,"
+ = "Bob Austin,"
+ = "Ram Banerjee,"
+ = "Paul Bond,"
+ = "Allen Boothroyd,"
+ = "Cambridge,"
+ = "Cleartone,"
+ = "John Coll,"
+ = "John Cox,"
+ = "Andy Cripps,"
+ = "Chris Curry,"
+ = "6502 designers,"
+ = "Jeremy Dion,"
+ = "Tim Dobson,"
+ = "Joe Dunn,"
+ = "Paul Farrell,"
+ = "Ferranti,"
+ = "Steve Furber,"
+ = "Jon Gibbons,"
+ = "Andrew Gordon,"
+ = "Lawrence Hardwick,"
+ = "Dylan Harris,"
+ = "Hermann Hauser,"
+ = "Hitachi,"
+ = "Andy Hopper,"
+ = "ICL,"
+ = "Martin Jackson,"
+ = "Brian Jones,"
+ = "Chris Jordan,"
+ = "David King,"
+ = "David Kitson,"
+ = "Paul Kriwaczek,"
+ = "Computer Laboratory,"
+ = "Peter Miller,"
+ = "Arthur Norman,"
+ = "Glyn Phillips,"
+ = "Mike Prees,"
+ = "John Radcliffe,"
+ = "Wilberforce Road,"
+ = "Peter Robinson,"
+ = "Richard Russell,"
+ = "Kim Spence-Jones,"
+ = "Graham Tebby,"
+ = "Jon Thackray,"
+ = "Chris Turner,"
+ = "Adrian Warner,"
+ = "Roger Wilson,"
+ = "Alan Wright."
+;
+; test ROM indirection
+ = MRESET
+ = /(MRESET )
+
+; ORG $FF00
+; Page $FF contains code which has to be located at a fixed
+; place in memory. Two main types of code come into this
+; category:
+;   (a) Code to call a routine located in a paged ROM
+;   (b) Fixed OS calls
+
+; Calls to the operating system are normally made by calling
+; JMIs located at the top of the address space of the m/c.
+; The indirection vectors are located in page 2 starting at
+; $0200. To redirect an OS call which indirects thru location
+; $0200+2*x:
+;   (a) Set up a 3-byte tuple at location ROMVEC+3*x to refer
+;       to the paged ROM entry point
+;   (b) Set the OS indirection at location $0200+2*x to value
+;       $FF00+3*x
+; A JMI $0200+2*x will then result in the routine in paged ROM
+; being called. The routine is entered with A, X, Y and P
+; unaltered since the point of call. Similarly, no registers
+; are corrupted on return from the routine.
+;
+; Locations $FF00 onwards contain JSRs to the same location (OSROM);
+; thus when OSROM is entered the top entry on the stack determines
+; which JSR OSROM was called, enabling the OS call made to be
+; identified (by convention paged ROM routed indirections thru
+; $0200+2*x jump to location $FF00+3*x).
+
+ROMUSR
+ JSR OSROM
+
+ROMBRK
+ JSR OSROM
+
+ROMIRA
+ JSR OSROM
+
+ROMIRB
+ JSR OSROM
+
+ROMCOM
+ JSR OSROM
+
+ROMBYT
+ JSR OSROM
+
+ROMWRD
+ JSR OSROM
+
+ROMWRC
+ JSR OSROM
+
+ROMRDC
+ JSR OSROM
+
+ROMFIL
+ JSR OSROM
+
+ROMARG
+ JSR OSROM
+
+ROMBGT
+ JSR OSROM
+
+ROMBPT
+ JSR OSROM
+
+ROMGPB
+ JSR OSROM
+
+ROMFND
+ JSR OSROM
+
+ROMFSC
+ JSR OSROM
+
+ROMEVT
+ JSR OSROM
+
+ROMUPT
+ JSR OSROM
+
+ROMNET
+ JSR OSROM
+
+ROMVDU
+ JSR OSROM
+
+ROMKEY
+ JSR OSROM
+
+ROMINS
+ JSR OSROM
+
+ROMREM
+ JSR OSROM
+
+ROMCNP
+ JSR OSROM
+
+ JSR OSROM
+
+ JSR OSROM
+
+ JSR OSROM
+
+OSROM  ;call routine in paged ROM
+; This routine zaps the stack a great deal.
+;
+; current state of stack is:
+; 2  hi-byte return address (ignored)
+;    [will be used for final PLP prior to return to caller]
+; 1  lo-byte return address => which ROM vector to use
+;    (this is of the form 3*n+2, n=0,1,2...)
+;    [will be used for final PLA prior to return to caller]
+ PHA ;make room for current ROMid
+
+ PHA ;make room for ...
+ PHA ;... return link to OSROM2
+
+ PHA ;make room for ...
+ PHA ;... interrupt return address ...
+ PHP ;... to enter paged ROM with status as on entry
+
+ PHA ;save A
+ TXA
+ PHA ;save X
+ TYA
+ PHA ;save Y
+
+; stack currently looks like:
+; 11  future PLP stored after return from paged ROM
+; 10  future PLA restoring A after using A to restore ROM status
+;  9  will hold current ROMid
+;
+;  8  return link ...
+;  7  ... to OSROM2
+;
+;  6  interrupt state ...
+;  5  ... to enter ...
+;  4  ... at paged ROM address
+;
+;  3  A on entry
+;  2  X on entry
+;  1  Y on entry
+ TSX ;prepare to fudge stack
+; fudge return from paged ROM to OSROM2
+ LDAIM /(OSROM2-&01 )
+ STAAX &0108
+ LDAIM OSROM2-&01
+ STAAX &0107
+; fudge paged ROM entry address
+ LDYAX &010A ;Y -> indirection vector
+ LDAAY ROMVEC-&02+&00 ;routine address lo-byte
+ STAAX &0105
+ LDAAY ROMVEC-&02+&01 ;routine address hi-byte
+ STAAX &0106
+; deal with swopping of ROMs
+ LDA ROMID
+ STAAX &0109 ;save current ROMid
+ LDAAY ROMVEC-&02+&02 ;routine paged ROMid
+ STA ROMID
+ STA ROM
+; restore registers
+ PLA
+ TAY
+ PLA
+ TAX
+ PLA
+ RTI ;enter paged ROM at specified address
+OSROM2  ;routine will return here
+ PHP
+ PHA
+ TXA
+ PHA
+; stack looks like:
+; 6  slot for final PLP
+; 5  slot for final PLA
+; 4  previous ROMid
+; 3  processor status upon return from paged ROM
+; 2  A
+; 1  X
+ TSX
+ LDAAX &0102
+ STAAX &0105 ;move A down stack
+ LDAAX &0103
+ STAAX &0106 ;move P down stack
+; restore X
+ PLA
+ TAX
+; purge A and P from stack
+ PLA
+ PLA
+; restore previous ROMid
+ PLA
+ STA ROMID
+ STA ROM
+; return to caller restoring P to that upon return from paged ROM
+ PLA
+ PLP
+DEFEVT  ;default EVENT routine
+DEFUPT  ;default user print routine (simulate printer busy)
+DEFNET  ;default net routine (simulate printer busy)
+RTS
+ RTS
+
+
+FXBPUT  ;FX entry, C=1
+ TXA ;A = character
+ BCS OSBPUT ;[ALWAYS jump]
+
+
+RFRED
+ LDYAX FRED
+ RTS
+
+RJIM
+ LDYAX JIM
+ RTS
+
+RSHEIL
+ LDYAX SHEIL
+ RTS
+
+
+; security copy of indirection data
+ = VLEN
+ = IPAGE2
+ = /(IPAGE2 )
+;
+ JMP RPROM ;read byte from paged ROM
+ JMP VDU ;raw VDU WRCH (corrupts A, X and Y)
+ JMP EVENT ;signal event
+ JMP GSINTS ;used by paged ROMs
+ JMP GSREAD ;used by paged ROMs
+ JMP RDCH ;used by tube
+ JMP WRCH ;used by tube
+OSFIND JMI FNDVEC
+
+OSBGPB JMI GPBVEC
+OSBPUT JMI BPTVEC
+OSBGET JMI BGTVEC
+OSARGS JMI ARGVEC
+OSFILE JMI FILVEC
+OSRDCH JMI RDCVEC
+OSASCI CMPIM MCR
+ BNE OSWRCH
+OSNEWL LDAIM MLF
+ JSR OSWRCH
+ LDAIM MCR
+OSWRCH JMI WRCVEC
+OSWORD JMI WORVEC
+OSBYTE JMI BYTVEC
+OSCLI JMI COMVEC
+
+; hardware vectors
+ = NMI ;non-maskable interrupt
+ = /(NMI )
+ = MRESET ;hardware reset
+ = /(MRESET )
+ = IRQ ;interrupt
+ = /(IRQ )
+ENDROM  ;end of ROM
+
+ [ ENDROM=0
+ |
+ ! 0,"MOS99 is not $0400 bytes long"
+ ]
+
+ TTL BBC Microcomputer Machine Operating System (MOS)
+
+ OPT OPPON
+
+ END

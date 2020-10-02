@@ -1,0 +1,848 @@
+; > MOS38
+ TTL MOS38         CLI
+ OPT MOS38
+;(c) 1981 ACORN
+;BBC MOS
+;Change record:
+;004 29-Jul-81 MP     Prototype version
+;Author(s):
+;PB     Paul Bond
+;MP     Mike Prees
+
+
+; RDCH
+INKEY
+ STX RDCTLO ;set INKEY counter
+ STY RDCTHI
+ LDAIM &FF ;indicate INKEY operational
+ BNE RDCH5 ;[ALWAYS JUMP]
+RDCH  ;default OSRDCH
+ LDAIM ZERO ;indicate not INKEY
+RDCH5
+ STA RDCTEM
+; save X and Y
+ TXA
+ PHA
+ TYA
+ PHA
+; check for exec file
+ LDY EXECH
+ BEQ RDCHQ ;[no exec file]
+;
+ SEC
+ ROR ESSEMA ;enter critical region
+ JSR OSBGET ;get a byte from exec file
+ PHP
+ LSR ESSEMA ;exit critical region
+ PLP
+ BCC RDCH3 ;[return character]
+;
+; end of exec file: close exec file
+; Y = handle
+ LDAIM ZERO
+ STA EXECH ;cancel exec file handle
+ JSR OSFIND ;close exec file
+RDCHQ  ;read character
+ BIT ESCFLG
+ BMI RDCH1 ;[ESCAPE detected]
+;
+ LDX RDCHSW ;set to read ch from selected buffer
+ JSR RDCHG ;get ch from kybd input buffer
+ BCC RDCHN ;[character available]
+;
+; C=1
+;
+ BIT RDCTEM
+ BVC RDCHQ ;[INKEY not operational]
+;
+ LDA RDCTLO
+ ORA RDCTHI
+ BNE RDCHQ ;[INKEY counter <> 0]
+;
+;INKEY count exhausted
+;
+ BCS RDCH2 ;[ALWAYS jump, return A=$FF, C=1]
+;
+RDCH1  ;ESCAPE detected
+ SEC ;indicate escape detected
+ LDAIM ESC
+RDCHN  ;C=0 => 'real' character
+RDCH3  ;C=1 => escape detected OR INKEY count expired
+ STA RDCTEM ;save character read
+RDCH2  ;entry point used when INKEY count exhausted (N.B. RDCTEM=$FF)
+ PLA ;restore X and Y
+ TAY
+ PLA
+ TAX
+ LDA RDCTEM ;A := character
+ RTS
+COPYR  ;DO NOT MOVE (must precede COMTAB with bytes < $80)
+ = ")"
+ = "C"
+ = "("
+ = ZERO
+; command level interpreter
+COMTAB  ;table of MOS commands
+; this table uses the fact that all routine address hi-bytes
+; will have the top bit set
+; N.B. addresses are stored hi-byte followed by lo-byte
+;      hi-byte is assumed to be >=$80
+;      code following address is A reg on entry to address
+;      A+ => enter with XY -> line
+;      A- => enter with Y = offset
+; .
+ = "."
+ & /JMIFSC
+ = FSCAT ;enter with XY -> line
+
+; FX
+ = "FX"
+ & /FX
+ = &FF ;enter with Y = offset
+
+; BASIC
+ = "BASIC"
+ & /BASIC
+ = NULL ;don't care
+
+; CAT
+ = "CAT"
+ & /JMIFSC
+ = FSCAT ;enter with XY -> line
+
+; CODE
+ = "CODE"
+ & /FXN
+ = FXCODE ;enter with Y = offset
+
+; EXEC
+ = "EXEC"
+ & /EXEC
+ 
+ = ZERO ;enter with XY -> line
+
+; HELP
+ = "HELP"
+ & /HELP 
+ 
+ = &FF ;enter with Y = offset
+
+; KEY
+ = "KEY"
+ & /KEY 
+ 
+ = &FF ;enter with Y = offset
+
+; LOAD
+ = "LOAD"
+ & /LOAD 
+ 
+ = &00 ;enter with XY -> line
+
+; LINE
+ = "LINE"
+ & /JMIUSR 
+  = &01 ;enter with A=$01, XY -> line
+
+; MOTOR
+ = "MOTOR"
+ & /FXN 
+ 
+ = FXMOTR ;enter with Y = offset
+
+; OPT
+ = "OPT"
+ & /FXN 
+ 
+ = FXOPT ;enter with Y = offset
+
+; RUN
+ = "RUN"
+ & /JMIFSC 
+ 
+ = FSRUN ;enter with XY -> line
+
+; ROM
+ = "ROM"
+ & /FXN 
+ 
+ = FXSROM ;don't care
+
+; SAVE
+ = "SAVE"
+ & /SAVE 
+ 
+ = ZERO ;enter with XY -> line
+
+; SPOOL
+ = "SPOOL"
+ & /SPOOL 
+ 
+ = ZERO ;enter with XY -> line
+
+; TAPE
+ = "TAPE"
+ & /FXN 
+ 
+ = FXTAPE ;don't care
+
+; TV
+ = "TV"
+ & /FXN 
+ 
+ = FXTV ;enter with Y = offset
+
+; default if first character is not alpha, |, . or /
+ & /JMIFSC 
+ 
+ = FSNAME ;enter with XY -> line
+ = ZERO ;end of table
+
+
+CLINT
+ STX WORK +&00
+ STY WORK +&01
+; report *command to filing system
+ LDAIM FSCLI
+ JSR JMIFSC
+; check line is terminated by CR
+ LDYIM ZERO
+CLICHK LDAIY WORK
+ CMPIM MCR
+ BEQ CLILOK ;[terminator present]
+ INY
+ BNE CLICHK
+; no terminator within 256 bytes so ignore line
+ RTS
+;
+CLILOK LDYIM &FF ;start scan from beginning of input buffer
+; N.B. Y will now be incremented to ZERO by SKIPSN
+CLIR  ;skip leading spaces and asterisks
+ JSR SKIPSN ;skip spaces/asterisk and spaces
+ BEQ CLIRTS ;[reached end-of-line, ignore line]
+ CMPIM SPLAT
+ BEQ CLIR ;[asterisk, ignore]
+ JSR SKIPSP ;skip spaces
+ BEQ CLIRTS ;[reached end-of-line, ignore line]
+; ignore comment line
+ CMPIM "|"
+ BEQ CLIRTS ;[*| command]
+; check for override
+ CMPIM "/"
+ BNE NOTSL ;[not /]
+; */name
+ INY ;skip past /
+ JSR CLIXY ;make XY -> after /
+ LDAIM FSNOTA
+ BNE JMIFSC ;[ALWAYS JUMP]
+NOTSL
+; save pointer to rest of line
+ STY CLIRY
+; reached command name
+; look for name in table
+ LDXIM ZERO ;set X to scan command table
+ BEQ DOT ;[ALWAYS JUMP]
+;
+; this code should intercept all strange commands,
+; including NULs and top-bit-set characters
+;
+CLISCN
+ EORAX COMTAB ;compare
+ ANDIM &DF ;equate cases
+ BNE CLINXC ;[mismatch, try next CLI command name]
+;
+; match so far, C=1
+;
+ INY ;step to next user character
+ CLC ;force following BCS to fail first time thru
+CLISTP
+ BCS CLIMCH ;[forced match by .]
+ INX ;step to next/first CLI command character
+ LDAIY WORK ;get next user character
+ JSR CAPS
+ BCC CLISCN ;[alpha]
+;
+; user command name delimited by non-letter
+;
+DOT
+; match on full name ?
+ LDAAX COMTAB ;get next CLI command character
+ BMI CLIMFN ;[match on full name]
+;
+; not a match on full name, check for forced match
+;
+ LDAIY WORK ;get this user character
+ CMPIM "." ;force match ?
+ BEQ CLINXS ;[forced match, search for terminator, C=1]
+;
+; not forced match, skip to next CLI command name
+;
+CLINXC
+ CLC
+ LDY CLIRY ;restore Y (Y points to user command name)
+;
+; skip to next CLI command name
+;
+ DEY ;adjust for following INY
+; C=0
+CLINXS  ;C=1
+ INY
+ INX
+CLISKP
+ INX ;N.B. X points to character +2 after one to be compared
+ LDAAX COMTAB -&02
+ BEQ CLIEND ;[no more CLI command names]
+ BPL CLISKP ;[not reached address hi-byte]
+ BMI CLISTP ;[ALWAYS jump, compare next CLI command name]
+; NEVER fall thru
+;
+CLIMFN  ;full name match
+; adjust for following DEXs
+ INX
+ INX
+CLIMCH  ;match
+ DEX
+ DEX
+; found CLI command match
+; construct JMI hi-byte value to command processing code
+ PHA
+; construct JMI lo-byte value to command processing code
+ LDAAX COMTAB +&01
+ PHA
+; skip spaces after command name
+ JSR SKIPSP
+ CLC ;C=0 used by FXN entry
+ PHP ;status used by EXEC and SPOOL
+; (optionally) make XY -> rest of line
+ JSR CLIXYA
+ RTI ;enter command processing routine
+
+
+CLIXYA  ;conditionally make XY -> rest of line
+ LDAAX COMTAB +&02
+ BMI CLIXY0 ;[keep Y = offset of rest of line from WORK]
+CLIXY  ;make XY -> rest of command line
+ TYA ;A = offset of rest of line
+ LDYAX COMTAB +&02 ;Y := function code
+CLIXY2
+ CLC
+ ADC WORK ;N.B. C=1 => carry
+ TAX ;X = lo-byte of pointer to rest of line
+ TYA ;A = function code
+ LDY WORK +&01
+ BCC CLIXY1 ;[no carry]
+; carry
+ INY
+CLIXY1  ;N.B. Y = hi-byte of pointer to rest of line
+CLIXY0
+CLIRTS
+SVACK  ;command accepted by service ROM
+ RTS
+
+
+BASIC  ;select BASIC language ROM
+ LDX BROMID
+ BMI NBASIC ;[no BASIC ROM]
+ SEC ;used by tube
+ JMP SELANG ;enter BASIC ROM (N.B. C=1)
+NBASIC  ;BASIC ROM not present so offer to service ROMs
+CLIEND  ;entered here if command not recognised or does not exist
+; offer command to service ROMs
+ LDY CLIRY ;restore Y offset to point to command name
+ LDXIM SVNAME
+ JSR SVOP
+ BEQ SVACK ;[accepted by service ROM]
+; command not accepted by a service ROM
+; so pass command to filing system
+ LDA CLIRY  ;A = offset to command name
+ JSR CLIXY2 ;make XY -> rest of line
+ LDAIM FSNAME
+JMIFSC
+
+ JMI FSCVEC
+;
+;
+OPT
+ ASLA ;lsb(A) := 0
+;* LDAIM $00
+EOF
+ ANDIM &01 ;$00 => OPT,  $01 => EOF
+ BPL JMIFSC ;[ALWAYS JUMP, present option to file system AND return]
+
+
+; ignore space characters
+SKIPSN INY ;skip current character
+SKIPSP LDAIY WORK
+ CMPIM SPACE
+ BEQ SKIPSN ;[character is space, ignore]
+SKPSP1 CMPIM MCR
+; Z=1 next character is CR
+; Z=0 next character is not CR
+ RTS
+SKPCM  ;C=0 => check for line end
+;C=1 => skip optional comma and check for line end
+ BCC SKIPSP
+SKPCOM
+; skip spaces and an optional comma
+ JSR SKIPSP
+ CMPIM ","
+ BNE SKPSP1
+ INY ;N.B. force Z=0 (i.e. non-zero result)
+ RTS
+; get decimal number
+GETNUM
+ JSR SKIPSP ;skip leading spaces, A := delimiter
+ JSR TSTNUM
+ BCC TSTNR ;[not a digit]
+GN0
+ STA NUMBER ;NUMBER := accumulated number so far
+ JSR TSTNUX ;read digit skipping current character
+ BCC GTNS ;[non-digit serves as terminator]
+ TAX ;save last digit read
+ LDA NUMBER
+ ASLA ;times 2
+ BCS TSTNR ;[overflow]
+ ASLA ;times 4
+ BCS TSTNR ;[overflow]
+; N.B. C=0
+ ADC NUMBER ;times 5
+ BCS TSTNR ;[overflow]
+ ASLA ;times 10
+ BCS TSTNR ;[overflow]
+ STA NUMBER ;NUMBER := NUMBER * 10
+ TXA ;A := most recently read digit
+; N.B. C=0
+ ADC NUMBER ;NUMBER := accumulated value
+ BCS TSTNR ;[overflow]
+ BCC GN0 ;[read next digit, if any]
+GTNS
+ LDX NUMBER
+ CMPIM MCR
+ SEC
+; return with:
+; C=1 => valid number, Z=1/0 => delimiter is/is_not CR, number in X
+ RTS
+
+; check character is a digit
+TSTNUX
+ INY ;skip current character
+TSTNUM
+ LDAIY WORK ;get next character
+ CMPIM &3A ;N.B. $3A = '9' + 1
+ BCS TSTNR ;[bad digit, > '9']
+ CMPIM "0"
+ BCC TSTNR ;[bad digit, < '0']
+ ANDIM &0F ;convert to number (do not corrupt V)
+; N.B. C=1
+ RTS
+
+TSTNRX
+ JSR SKPCOM
+TSTNR
+ CLC
+; C=0  bad number, A = delimiting character
+ RTS
+
+TSTHEX  ;test for, and convert, hex digit
+ JSR TSTNUM
+ BCS TSTH0 ;[is a number, therefore a valid hex digit]
+ ANDIM &DF ;force upper case
+ CMPIM "G"
+ BCS TSTNRX ;[>'F' so fail]
+ CMPIM "A"
+ BCC TSTNRX ;[<'A' so fail]
+ PHP ;save V
+ SBCIM ALPHAA -&0A ;convert to hex
+ PLP ;restore V
+; C=1
+TSTH0  ;C=1
+ INY
+ RTS
+
+
+WRCH  ;system write character
+ PHA ;save character on stack
+ TXA ;save registers
+ PHA
+ TYA
+ PHA
+ TSX
+ LDAAX &0103 ;restore character
+ PHA
+; A = character
+
+; examine WRCH selection(s)
+;
+ BIT NETWRC
+ BPL WRCNTN ;[WRCH not to net]
+; WRCH to net
+; A = character
+ TAY ;send character in Y
+ LDAIM NTWRCH
+ JSR JMINET ;WRCH thru net
+ BCS WRCHNN ;[immediate return to caller]
+;
+; continue within WRCH
+;
+WRCNTN
+
+ CLC ;in case VDU not selected
+ LDAIM WRVDU
+ BIT WRCHSW
+ BNE WRCHNV ;[WRCH not to VDU]
+; WRCH to VDU
+ PLA
+ PHA ;A := character
+ JSR VDU
+; C=0 => VDU says do not print character
+WRCHNV  ;WRCH not to VDU
+
+; C=0 => VDU (if selected) says do not print character
+; check who controls printing
+ LDAIM WRPRNT
+ BIT WRCHSW
+ BNE WRCHNC ;[printing not controlled by VDU]
+; printing controlled by VDU
+ BCC WRCHNP ;[VDU says do not print character]
+WRCHNC  ;conditionally print character
+ PLA
+ PHA ;A := character
+ JSR MPRINT ;conditionally print character
+WRCHNP  ;do not print character
+
+; check for output to RS423
+;
+ [ FALSE=0
+ LDAIM WRRS
+ BIT WRCHSW
+ BEQ WRCHNR ;[RS423 disabled]
+ |
+ LDA WRCHSW
+ RORA ;**************** ASSUME WRRS = 1 ****************
+ BCC WRCHNR ;[RS423 disabled]
+ ]
+
+; WRCH via RS423
+ LDY RSTUT
+ DEY
+ BPL WRCHNR ;[RS423 managed by CFS, ignore WRCH request]
+ PLA
+ PHA ;A := character
+;
+ PHP
+ SEI
+ LDXIM BRSO
+ PHA
+ JSR EXAM
+ BCC WRCNP1 ;[buffer not empty]
+; RS423 output buffer empty
+ JSR RSBUSY ;enable RS423 Tx interrupts
+WRCNP1
+ PLA
+ LDXIM BRSO
+ JSR WRITE ;insert character into RS423 output buffer, waiting if necessary
+; N.B. WRITE disables interrupts
+; character not inserted if ESCAPE detected
+ PLP
+;
+WRCHNR  ;not via RS423
+
+; check for spooling enabled
+; check whether spooling active
+ LDAIM WRSPL
+ BIT WRCHSW
+ BNE WRCHNS ;[spooling disabled]
+; spool character
+ LDY SPOOLH
+ BEQ WRCHNS ;[spooling not active]
+; spooling active
+; write byte to spool file
+ PLA
+ PHA ;A := character
+;
+ SEC
+ ROR ESSEMA ;enter critical region
+ JSR OSBPUT
+ LSR ESSEMA ;exit critical region
+WRCHNS  ;no spooling
+
+WRCHNN
+; exit restoring registers
+ PLA ;pull redundant byte
+ PLA
+ TAY
+ PLA
+ TAX
+ PLA ;restore character
+ RTS
+
+MPRINT  ;conditionally print character in A
+; N.B. character should never be NUL
+; decide whether to ignore character
+ BIT WRCHSW
+ BVS PRINT0 ;[only print thru VDU1]
+ CMP PIGNOR
+ BEQ PRINT0 ;[match on printer ignore character]
+;
+;
+; ======
+; PRINT
+; ======
+;
+; Print a character via VDU 1
+;
+; ENTRY:- A = Character
+;
+; EXIT:-  A,X,Y corrupt
+;         Flags preserved
+;
+PRINT  ;used by VDU (SOH), uses fact of exit with C=0
+ PHP
+ SEI
+; N.B. if print sink is 0 then character will
+; eventually be ignored by STROBE
+;
+ TAX ;save print character
+;
+; test whether printer enabled
+;
+ LDAIM WRPREN
+ BIT WRCHSW
+ BNE PRINT4 ;[printer disabled]
+;
+ TXA ;restore print character
+ LDXIM BPRNT ;X := print bufferid
+ JSR WRITE ;write character to buffer, waiting if necessary
+ BCS PRINT3 ;[ESCAPE detected]
+;
+; test printer status; interrupts disabled
+;
+ BIT PFLAG
+ BPL PRINT3 ;[printer busy]
+;
+; printer dormant
+; send the first character
+;
+ JSR STROBE ;send character to selected printer
+;
+PRINT3  ;printer busy
+PRINT4  ;return enabling interrupts
+ PLP ;restore interrupt state, set C=0 (fact used by VDU)
+;
+PRINT0
+ RTS
+
+
+STROBE  ;send character to selected printer
+; ****************************************
+; MUST BE ENTERED WITH INTERRUPTS DISABLED
+; **********************************
+; determine print sink
+ LDA PRNTSW
+ BEQ PURGE ;[ignore print request]
+; print sink determined by PRNTSW
+; 0:  infinite print sink
+; 1:  centronics
+; 2:  RS423 output
+; 3:  user print routine
+; 4:  net printer server
+ CMPIM PCEN
+ BNE STROB1 ;[not centronics]
+; centronics interface
+; this code must be executed with interrupts disabled
+; otherwise a CA1 interrupt coinciding with the STA PAR
+; would result in a spurious interrupt which would not
+; be recognised, resulting in a 'Bad IRQ' state
+ JSR REMOV ;remove character from print buffer
+ ROR PFLAG
+ BMI STROB0 ;[no more characters to print]
+ LDYIM &82
+ STY IERR ;enable parallel port printer interrupt
+; write character
+ STA PAR
+; pulse strobe line
+ LDA PCRR
+ ANDIM &F1 ;********** DO NOT CHANGE
+ ORAIM CA2LO ;********** DO NOT CHANGE
+ STA PCRR ;CA2 strobe lo (signal inverted by h/w)
+ ORAIM CA2HI ;********** DO NOT CHANGE
+ STA PCRR ;CA2 strobe hi (signal inverted by h/w)
+; N.B. leave signal hi
+ BNE STROB0 ;[ALWAYS jump, exit]
+
+STROB1  ;not centronics
+; X = bufferid
+ CMPIM PRS
+ BNE STROB3 ;[not RS423]
+; printer is RS423
+ LDY RSTUT
+ DEY
+ BPL STCRS ;[RS423 printer managed by CFS, ignore print request]
+; print to RS423
+ LSR PFLAG ;flag printer busy
+;
+RSBUSY
+ LSR RSFLAG ;flag RS423 busy
+;
+RSETX  ;enable RS423 Tx interrupts
+ JSR CNTRS
+ BCC RSOVF ;[RS423 input buffer overflow]
+;
+ LDXIM RHITXE ;set RTS hi, Tx interrupt enabled
+;
+RSED  ;alter Tx control register to X
+ LDYIM &9F ;field is b6-b5
+;
+RS423
+ PHP
+ SEI
+ TYA ;A := mask
+; *****************************************
+; MUST BE EXECUTED WITH INTERRUPTS DISABLED
+; *****************************************
+; A = mask (altered)
+; X = new value
+ STX RSOP ;save new value of field
+ AND RSCTFL ;copy status and clear field for new status
+ EOR RSOP ;add in new status
+ LDX RSCTFL ;X := old value
+STARSC  ;used by MC6850 N.B. does PLP RTS
+
+ STA RSCTFL ;update record of status
+ STA RSCTL ;update 6850
+ PLP
+RSOVF  ;RS423 input buffer overflow
+STROB0
+ RTS
+
+STROB3  ;not RS423
+
+ CLC
+
+; C=0
+; user or net print
+; X=print_bufferid
+; character in printer buffer
+ LDAIM UPWRCH
+ JSR mUPT ;call print routine (returns with carry meaningful)
+PFREE  ;indicate printer dormant (OSBYTE call used by UPT routine)
+ ROR PFLAG ;set printer status according to user print routine
+; C=0 => printer busy
+; C=1 => printer free
+; (default user print routine is DEFUPT)
+UPTRTS
+ RTS
+
+
+UPTINT  ;timer interrupt
+ BIT PFLAG
+ BMI UPTRTS ;[printer dormant]
+;
+; give a hand to polled printers
+ LDAIM UPTIME
+;
+MUPT  ;call user print routine (also used by VDU software)
+; A = reason code ($02/$03)
+ LDXIM BPRNT ;X := print buffer id
+;
+UPTX  ;entered by *FX5
+ LDY PRNTSW ;Y := current print selection
+ JSR JMINET ;call net print routine
+ JMI UPTVEC ;call user print routine AND return
+
+
+STROB4  ;not user print
+STCRS  ;RS423 managed by cassette
+; ignore print request by purging buffer AND return
+PURGE
+; purge buffer given by index in X
+; this routine does not corrupt A or X
+ CLC
+;
+PURGEX  ;entered by OSWORD sound routine with C=1
+ PHA ;save A
+ PHP ;save interrupt state
+ SEI
+;
+; kill sound channel if sound buffer
+ BCS PURNSB ;[OSWORD call so do not kill sound]
+ LDAAX BUFTYP
+ BPL PURNSB ;[not a sound buffer]
+; kill sound on channel X
+ JSR SCRST
+PURNSB
+;
+; flag buffer dormant
+ SEC
+ RORAX BACTIV
+;
+; check for input buffer
+ CPXIM OUTPUT
+ BCS PURGE3 ;[output buffer]
+;
+; input buffer, kill soft key expansion and VDU queueing
+;
+ LDAIM ZERO
+ STA SOFKL ;kill soft key expansion
+ STA QPOSN ;kill VDU queueing
+;
+PURGE3
+;
+ JSR JMIPUR ;use indirection with V=1 (defaults to CNP)
+;
+ PLP ;restore interrupt state
+ PLA ;restore A
+ RTS
+;
+;
+CNP  ;count buffer entries / purge buffer
+ [ $Tutu
+        =       ar_cnpv
+        RTS
+ |
+ BVC COUNT ;[count buffer entries]
+ ]
+;
+; purge buffer
+;
+; reset buffer pointers
+; set buffer start = buffer end
+ LDAAX BFSTRT
+ STAAX BFEND
+ RTS
+;
+;
+COUNT
+ PHP
+ SEI
+;
+ PHP ;save count type
+;
+ SEC
+ LDAAX BFEND
+ SBCAX BFSTRT
+ BCS BUFNX1
+; adjust for overflow
+ SEC
+ SBCAX BFORG
+BUFNX1
+;
+ PLP ;restore count type
+;
+ BCC BFCNT0 ;[input buffer]
+;
+; output buffer
+; adjust to give remaining entries
+ CLC
+ ADCAX BFORG
+ EORIM &FF
+;
+BFCNT0
+ LDYIM ZERO
+ TAX
+;
+ PLP
+ RTS
+
+
+ LNK MOS40

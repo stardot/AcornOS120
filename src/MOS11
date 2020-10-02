@@ -1,0 +1,367 @@
+
+ TTL VDU File - MOS11
+ OPT MOS11
+
+;Last revision 05/05/82
+
+;05/05/82 Move GADDR here. Change to tabke with 1 entry only
+;01/05/82 Recoded to account for new ordering of variables
+;24/04/82 READCH returns mode in Y, char. in X (AGAIN!)
+;19/04/82 Improved exit at RPXLC
+;16/04/82 improved READCH code
+;25/03/82 Change order of READCH character search
+;22/01/82 Change EIG to EIGABS for READPX
+;07/01/82 Rewrite READCH for non-TTX (GPT)
+;16/11/81 Fix to READCH change (15/11)
+;15/11/81 READCH returns mode in Y, char. in X
+;09/11/81 (Paul) Read start of VDU space coping with model A
+
+;READCH Reads the character at the current cursor location,
+;returning the result in A.
+;If the character is not found, 0 is returned.
+;Assumes new font splitting, using FNTFLG & PGSFNT
+
+READCH
+ LDY NCOLOR ;Is it TTX?
+ BNE READCE
+ LDAIY ZMEMT ;Yes, then read character direct (Y=0)
+ LDYIM &02 ;Look for characters to be swapped
+RDTTXA CMPAY TTXTB+&01 ;Is it one of them?
+ BNE RDTTXZ
+ LDAAY TTXTB ;Cheat in reverse order (see PTTX)
+ DEY ;ensure no further exchange
+RDTTXZ DEY
+ BPL RDTTXA
+READKE LDY MODE ;Only way of getting the mode
+ TAX
+ RTS
+
+
+READCE JSR PTCNV ;Get the bit pattern to READWS
+ LDXIM &20 ;First character to be checked
+READKF TXA  ;Address charcter
+ PHA
+ JSR CHADDR ;Result to ZTEMPC
+ PLA
+ TAX
+READKA LDYIM &07 ;Compare this character
+READKB LDAAY READWS ;Get bit pattern
+ CMPIY ZTEMPC ;Compare with font
+ BNE READKC ;Different?, then not this character
+ DEY  ;Same?, then look at next row down
+ BPL READKB
+ TXA
+ CPXIM &7F ;Is it a DEL?
+ BNE READKE ;No?, then you have found it
+READKC INX  ;Next character up
+ LDA ZTEMPC ;LSB of font pointer up by 8
+ CLC
+ ADCIM &08
+ STA ZTEMPC
+ BNE READKA ;More on this page?
+ TXA ;Finished search?
+ BNE READKF ;No?, then try next page
+ BEQ READKE ;(branch always taken)
+
+;Converts the 8,16 or 32 byte character on the screen to an 8 byte
+;bit pattern in Q .. Q+07. Not very fast, in particular, the 8 byte
+;version could be speeded up. Background text colour is recognized
+;as 'background', even if cursors are joined. Anything else is
+;recognised as 'foreground'
+
+;ZTEMP is the row number (7..0)
+;ZTEMP +01 is he bit pattern being formed from this row
+;ZTEMPB is the mask being used to isolate the current pixel
+
+PTCNV LDYIM &07 ;The row to be converted
+PTCNVA STY ZTEMP ;Start of 'convert 1 row' loop
+ LDAIM &01 ;The bit pattern to be formed
+ STA ZTEMP +&01 ;Finshed when a carry shifted out
+PTCNVB LDA MASKL ;Isolates the pixel to be tested in the current byte
+ STA ZTEMPB ;Must move to next byte when carry shifted out left
+ LDAIY ZMEMT ;Get the byte to be tested
+ EOR BTCOLF ;Isolate back from foreground
+ CLC
+PTCNVC BIT ZTEMPB ;Are any of the bits in this pixel set ?
+ BEQ PTCNVD ;No?, then this pixel was background
+ SEC  ;Yes?, then it was foreground
+PTCNVD ROL ZTEMP +&01 ;Shift this bit into the bit pattern
+ BCS PTCNVE ;carry shifted out?, then this pattern is complete
+ LSR ZTEMPB ;Isolate the next pixel
+ BCC PTCNVC ;carry clear, then continue
+ TYA  ;c=1, then examine the next byte in the row
+ ADCIM &07 ;(c=1), by adding 8 to Y
+ TAY
+ BCC PTCNVB ;and continue (branch always taken)
+PTCNVE LDY ZTEMP ;Restore Y
+ LDA ZTEMP +&01 ;bit pattern finished, store it in the READWS
+ STAAY READWS
+ DEY  ;& do the next row up
+ BPL PTCNVA
+ RTS  ;or return
+
+;RPXL Reads the pixel at V+(A),
+;returning $FF if the cursor is out of the window, else the logical
+;colour at the cursor.
+;Assumes the current cursor in internal representation is GCSIY...
+
+RPXLD PHA
+ TAX  ;Convert to Ico-ords
+ JSR EIGABS
+ PLA
+ TAX
+ JSR GADDV
+ BNE RPXLC ;Out of window?, then return $FF.
+ LDAIY ZMEMG
+RPXLA ASLA  ;Shift out the leftmost bit
+ ROL ZTEMP ;& shift into the byte to receive the pixel's logical colour
+ ASL ZMASK ;unless the bit was irrelevant
+ PHP  ;(to see if this is finished, later)
+ BCS RPXLB
+ LSR ZTEMP ;kick the bit out again if it wasn't relevant
+RPXLB PLP  ;Have we finished ?
+ BNE RPXLA ;No?, then loop
+ LDA ZTEMP ;Yes?, then isolate the logical colour
+ AND NCOLOR
+ RTS  ;& finish
+RPXLC LDAIM &FF ;Return $FF if point was outside graphics window
+RPXLX RTS ;& finish
+
+;Window a point, & plot if in window
+
+GADDW LDXIM NEWPT-V ;Do this for new point
+GADDV JSR WIND ;Do this for general point. Is it in window ?
+ BNE RPXLX ;No, then skip the windowing
+
+;otherwise fall through to ...
+
+;GADDR Addresses a single pixel on the graphics screen
+;Results are not guaranteed unless point is on screen
+;Requires :-
+;(X) = offset from V of point to be addressed.
+;Format of the pointed at point is INTERNAL co-ords, non-inverted Y axis
+;with 4 bytes of XL,XH,YL,YH.
+;ZTBL points to row offset table as per character writing
+;TOPSCN as usual.
+;NPIX = No. pixles per byte
+;Wraparound may occur on ends of lines only, thus hardware must display
+;ALL the characters in the display area (OK for modes as proposed).
+;Sets the following variables
+;YLINE = line offset within character cell (0..7)
+;ZMEMG = 1st byte of character cell
+;ZMASK = mask
+
+GADDR LDAAX V+&02 ;(Y,LSB) MSB assumed 0
+ EORIM &FF ;Invert Y axis
+ TAY
+ ANDIM &07 ;Get YLINE = 3 least significant bits of Y
+ STA YLINE
+ TYA
+ LSRA  ;Get twice the character row (for 2 byte entry lookup table)
+ LSRA
+ LSRA
+ ASLA  ;c=0 guaranteed (better than AND $FE  : CLC)
+ TAY  ;Character row offset
+ LDAIY ZTBL ;Add row offset to TOPSCN
+ STA ZTEMP ;MSB
+ INY
+ LDAIY ZTBL ;LSB
+ LDY MEMODE
+ BEQ GADDRD; Divide by 2 if 10K mode (can only be 0 or 2)
+ LSR ZTEMP
+ RORA
+GADDRD ADC TOPSCN ;c=0 guaranteed before this add
+ STA ZMEMG
+ LDA ZTEMP
+ ADC TOPSCN+&01
+ STA ZMEMG +&01
+
+;Now calculate the X offset
+
+ LDAAX V+&01 ;(MSB,X)
+ STA ZTEMP
+ LDAAX V ;(LSB,X)
+ PHA  ;Push the LSB of the X co-ordinate
+ AND NPIX ;Calc. ZMASK (NB, c=0 from prev. addition)
+ ADC NPIX ;This gives the correct starting position
+ TAY ;within the table, plus 1
+ LDAAY MASKTB-&01 ;So compensate by subtracting one here
+ STA ZMASK
+ PLA  ;Retrieve the LSB of X co-ordinate
+ LDY NPIX
+ CPYIM &03 ;Divide by NPIX, and mult. by 8
+ BEQ GADDRA ;4 pixles/byte - mult. by 2
+ BCS GADDRB ;8 pixles/byte - don't do anything
+ ASLA  ;2 pixles per byte - mult. by 4
+ ROL ZTEMP
+GADDRA ASLA
+ ROL ZTEMP
+GADDRB ANDIM &F8 ;Ignore any low order bits
+ CLC  ;Calculate the final address, LSB 1st
+ ADC ZMEMG
+ STA ZMEMG
+ LDA ZTEMP
+ ADC ZMEMG +&01
+ BPL GADDRC ;Skip wraparound if < $8000
+ SEC ;Correct by subtracting off screen if it is
+ SBC BYTSCN
+GADDRC STA ZMEMG +&01 ;Store final address, MSB
+ LDY YLINE
+COPYZX LDAIM &00 ;Sets z=1
+ RTS
+
+;VDUB for cursor control keys
+
+VDUB
+ PHA
+ LDAIM &A0 ;To see if the cursors are joined or drivers disabled when BIT is done
+ LDX QPOSN ;Qing bytes ?
+ BNE VDUBEX ;Yes?, then ignore this
+ BIT STATS ;Are the drivers enabled ?
+ BNE VDUBEX ;Leave if not, or cursors joined
+ BVS VDUBA ;Are we in cursor edit mode ? Yes?, then skip
+ LDA CSTEMP ;Flash the cursor at twice the rate
+ ANDIM &9F ;Sets b5=0, b6=1 of r10 of 6845, giving fast flashing cursor
+ ORAIM &40
+ JSR ETCB ;Store in r10 of 6845, don't save to CSTEMP
+ LDXIM CSX-V ;Set b1 of STATS or store CSX to PCSX
+ LDYIM PCSX-V
+ JSR COPY2
+ JSR OCSRWR ;Print the output cursor
+ LDAIM &02 ;Set b1 of STATS
+ JSR STTOR
+VDUBA LDAIM &BF ;Clear b6 of STATS
+ JSR STTAND
+ PLA  ;Restore input character to routine
+ ANDIM &7F ;Kill the parity bit
+ JSR VDU ;Execute cursor movement on input cursor
+ LDAIM &40 ;Set b6 of STATS
+ JMP STTOR
+
+;Copy key in cursor editing
+
+COPYCH
+ LDAIM &20 ;Cursors joined ?
+ BIT STATS
+ BVC COPYZX ;Not C.E. mode, then do nothing
+ BNE COPYZX ;Cursors joined, so do nothing
+ JSR READCH ;Read character at cursor position
+ BEQ COPYCX ;Not recognised?, then exit with no further action
+ PHA  ;Move input cursor right
+ JSR HT ;But with no scrolling
+VDUBEX PLA
+COPYCX RTS
+
+;CSEDEX Finish cursor edit mode
+
+CSEDEX LDAIM &BD ;Clear b1 & b6 from STATS
+ JSR STTAND
+ JSR ETCA ;Restore cursor from CSTEMP to r10 of 6845
+ LDAIM TRMCH ;Restore (A)
+ RTS
+
+TOPCMD
+ LDX MODE ;~~~ Beginning of screen memory ~~~
+
+;& fall through to ....
+
+TOPMDX
+ TXA  ;Don't trust (X) anymore ....
+ ANDIM &07
+ TAY
+; read VDU low water mark for mode Y
+ LDXAY MODETB ;~~~ Read beginning of memory for mode (Y) ~~~
+ LDAAX STSCTB ;A := hi-byte of lwm address
+ LDXIM &00 ;Used later
+; check model type
+ BIT MODEL
+ BMI PRBB1 ;[model B, all modes permissable]
+; model A
+; return HWM of zero for modes 0 to 3
+; (cos they require between 16K and 20K)
+ ANDIM &3F ;correct for 16K m/c (model A)
+ CPYIM &04 ;fault modes<=3 on model A
+ BCS PRBB1 ;[mode>=4]
+ TXA ;model A and mode<=3. Sets (A):=0
+PRBB1  ;return low water mark
+ TAY
+ RTS
+
+ENDVDU  ;end of VDU code
+; Now test code layout for correctness
+
+T1 * SOH:SHR:&8-CODORG:SHR:&3
+T2 * DCA:SHR:&8-CODORG:SHR:&3
+T3 * DCB:SHR:&8-CODORG:SHR:&3
+T4 * DCC:SHR:&8-CODORG:SHR:&3
+T5 * SYN:SHR:&8-CODORG:SHR:&3
+T6 * ETB:SHR:&8-CODORG:SHR:&3
+T7 * CAN:SHR:&8-CODORG:SHR:&3
+T8 * EM:SHR:&8-CODORG:SHR:&3
+T9 * FS:SHR:&8-CODORG:SHR:&3
+TA * GS:SHR:&8-CODORG:SHR:&3
+TB * US:SHR:&8-CODORG:SHR:&3
+ [ T1=0
+ |
+ ! 0,"SOH out of range"
+ ]
+ [ T2=0
+ |
+ ! 0,"DCA out of range"
+ ]
+ [ T3=0
+ |
+ ! 0,"DCB out of range"
+ ]
+ [ T4=0
+ |
+ ! 0,"DCC out of range"
+ ]
+ [ T5=0
+ |
+ ! 0,"SYN out of range"
+ ]
+ [ T6=0
+ |
+ ! 0,"ETB out of range"
+ ]
+ [ T7=0
+ |
+ ! 0,"CAN out of range"
+ ]
+ [ T8=0
+ |
+ ! 0,"EM out of range"
+ ]
+ [ T9=0
+ |
+ ! 0,"FS out of range"
+ ]
+ [ TA=0
+ |
+ ! 0,"GS out of range"
+ ]
+ [ TB=0
+ |
+ ! 0,"US out of range"
+ ]
+
+TC * HRGTB:SHR: 8
+TD * TXTTB:SHR: 8
+ [ TC-TD=0
+ |
+ ! 0,"HRGTB / <> TXTTB /"
+ ]
+
+TE * CLASCA:SHR: 8
+TF * CLASCE:SHR: 8
+
+ [ TE-TF=0
+ |
+ ! 0,"CLASCA / <> CLASCE /"
+ ]
+
+ OPT OPPON
+ < 3
+
+ LNK MOS30

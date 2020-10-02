@@ -1,0 +1,766 @@
+; > MOS44
+ TTL MOS44         OSBYTE routines
+ OPT MOS44
+;(c) 1981 ACORN Computers Limited
+;BBC Microcomputer Machine Operating System (MOS)
+;Change record:
+;01-Mar-82 PB  PEEK and POKE introduced
+;Author(s):
+;PB     Paul Bond
+
+
+BYTET  ;table for OSBYTE. N.B. lo-byte followed by hi-byte
+;
+; 0  indicate version number
+; X=0  => BRK message
+; X<>0 => return version number in X
+ & VER
+ 
+;
+; 1  set value
+ & V2B156
+ 
+;
+; 2  select input stream
+; X=0  => select keyboard, disable RS423
+; X=1  => select RS423, enable RS423
+; X=2  => select keyboard, enable RS423
+ & SELIN
+ 
+;
+; 3  select output stream(s)
+; X=rrrrspvl
+; r  (reserved)
+; s=0  => spooling enabled
+; p=0  => printing enabled
+; v=0  => output to VDU enabled
+; l=1  => output to RS423 enabled
+ & V2B34
+ 
+;
+; 4  enable/disable cursor edit
+; X=0  => cursor editing enabled
+; X=1  => COPY/LEFT/RIGHT/DOWN/UP return $87/$88/$89/$8A/$8B
+; X=2  => COPY/LEFT/RIGHT/DOWN/UP at as soft keys 11 thru 15
+ & V2B34
+ 
+;
+; 5  select print destination
+; X=0  => infinite sink
+; X=1  => centronics
+; X=2  => RS423
+ & SPRINT
+ 
+;
+; 6  set printer ignore character
+; X=0  => ignore no characters
+; X<>0 => ignore character <X>
+ & V2B156
+ 
+;
+; 7  set RS423 receive baud rate
+; X=0  => set default (9600)
+; X=1/2/3/4/5/6/7/8 => 75/150/300/1200/2400/4800/9600/19200
+ & RXBAUD
+ 
+;
+; 8  set RS423 trasmit baud rate
+; [values as for OSBYTE(7)]
+ & TXBAUD
+ 
+;
+; 9  set flash mark period
+; X=0  => infinite
+; X<>0 => <X> * 20 milliseconds
+ & FMRK
+ 
+;
+; 10  set flash space period
+; 9  set flash mark period
+; X=0  => infinite
+; X<>0 => <X> * 20 milliseconds
+ & FSPC
+ 
+;
+; 11  set auto-repeat delay period
+; X=0  => suppress auto-repeat
+; X<>0 => set delay between first and second character to <X> centiseconds
+ & ARDLY
+ 
+;
+; 12  set auto-repeat repeat period
+; X=0  => set delay and period to values on power-up
+; X<>0 => set period between subsequent characters to <X> centiseconds
+ & ARRPT
+ 
+;
+; 13  disable event
+; X=event_code
+; 0: output buffer empty
+; 1: input buffer full
+; 2: character entering input buffer
+; 3: ADC conversion complete
+; 4: vertical SYNC
+; 5: interval timer crossing zero
+; 6: ESCAPE detected
+; 7: RS423 error
+ & MDSABL
+ 
+;
+; 14  enable event
+; [values as for OSBYTE(13)]
+ & ENABLE
+ 
+;
+; 15  flush buffer class
+; X=0  => flush all buffers
+; X=1  => flush currently selected input buffer
+ & FLUSHC
+ 
+;
+; 16  select number of ADC channels
+; X=0  => stop scanning ADC channels
+; X=1/2/3/4 => only scan channels 1 thru <X>
+ & SETADC
+ 
+;
+; 17  start ADC conversion on channel X
+; X=1/2/3/4 => start conversion on channel <X>
+ & ADCBEG
+ 
+;
+; 18  reset soft keys
+ & RSOFT
+ 
+;
+; 19  wait for vertical sync
+ & WFVS
+ 
+;
+; 20  implode/explode soft font
+ & FONT
+ 
+;
+; 21  flush specific buffer
+ & FLUSHS
+ 
+;
+BYTEL * .-BYTET:SHR: 1 ;next entry in BYTETL table (lo component)
+;
+BYTET2
+BYTEM * &0075
+;
+;
+ & VDUST ;read VDU status; $75
+ 
+;
+ & MOSTST ;reflect state of KSTAT; $76
+ 
+;
+ & SHUTES ;close EXEC and SPOOL files; $77
+ 
+;
+ & OLDKEY ;set keyboard old key; $78
+ 
+;
+ & XSCANB ;scan keyboard at specific address; $79
+ 
+;
+ & XSCANA ;scan keyboard from matrix entry $10; $7A
+ 
+;
+ & PFREE ;indicate printer dormant; $7B
+ 
+;
+ & CESCPC ;clear escape flag; $7C
+ 
+;
+ & CESCPS ;set escape flag; $7D
+ 
+;
+ & CESCP ;clear escape flag and purge selected input buffer; $7E
+ 
+;
+ & EOF ;end of file; $7F
+ 
+;
+; $80
+;; read data on ADC channel
+; in:   Y>=0 => X=0  => read control information
+;               X<>0 => read last conversion on channel X
+;       Y<0  => read info for buffer NOT(X)
+; out:  Y>=0 => X=0  => X=fire-buttons, Y=last-channel-to-convert
+;               X<>0 => X=lo-data, Y=hi-data
+;       Y<0  => X=buffer-count (input: bytes ready, output: bytes left)
+ & RADCX
+ 
+;
+; $81
+; read key with time limit
+; in:   Y>=0 => X=lo-count,  Y=hi-count  (centiseconds)
+;       Y<0  => X=NOT(key-matrix-address)
+; out:  Y>=0 => Y=$00 => X=character
+;               Y=$1B => escape condition detected
+;               Y=$FF => timeout
+;       Y<0  => X=0   => key not pressed
+;               X<>0  => key pressed
+ & INKY
+ 
+;
+; $82
+; read machine high order address
+; out:  X = lo-component,  Y = hi-component
+ & RMHA
+ 
+; 
+; $83
+; read operating system high water mark
+; out:  X = lo-address,  Y = hi-address
+ & RMLA
+ 
+;
+; $84
+; read address of start of current screen mode
+; out:  X = lo-address,  Y = hi-address
+ & TOPCMD
+ 
+;
+; $85
+; read address of start of screen for mode X
+; in:   X = mode
+; out:  X = lo-address,  Y = hi-address
+ & TOPMDX
+ 
+;
+; $86
+;; read text cursor position
+; out:  X = x-text-coord,  Y = y-text-coord
+ & CSRPOS
+ 
+;
+; $87
+;; read character at text cursor
+; out:  X=0  => no character at cursor position
+;       X<>0 => X=character
+;       Y    =  current screen mode
+ & READCH
+ 
+;
+; $88
+; *CODE X, Y
+; in:   X = arg,  Y = arg
+; out:  C = return code
+;       X = return code
+;       Y = return code
+ & MCODE
+ 
+;
+; $89
+; *MOTOR X, Y
+; in:   X=0 => turn motor off
+;       X=1 => turn motor on
+;       Y   => motor selection
+ & MOTOR ;MOTOR command; $89
+ 
+;
+; $8A
+; insert character into buffer
+; in:   X = bufferid,  Y = character
+ & INSERT
+ 
+;
+; $8B
+; *OPT X, Y
+; in:   X = arg,  Y = arg  (effect is filing system dependent)
+ & OPT
+ 
+;
+; $8C
+; *TAPE X, Y
+; in:   X=0   => tape filing system at default baud rate (1200 baud)
+;       X=3   => tape filing system at 300 baud
+;       X=12  => tape filing system at 1200 baud
+;       Y=$00 => tape filing system is cassette
+;       Y=$FF => tape filing system is ROMs
+ & TAPE
+ 
+;
+; $8D
+; *ROM X, Y
+; X and Y ignored
+ & CROM
+ 
+;
+; $8E
+; enter language
+; in:   X = ROMid of language, Y = arg
+ & SELANG
+ 
+;
+; $8F
+; call paged ROM function
+; in:   X = reason code,  Y = arg
+; out:  C = return code
+;       Y = return code
+ & SVOP
+ 
+;
+; $90
+; alter TV characteristics
+; in:  X = vertical sync adjust,  Y = interlace adjust
+ & TV
+ 
+;
+; $91
+; remove character from buffer
+; in:   X = bufferid
+; out:  C=0 => Y=character
+;       C=1 => buffer empty
+ & REMOV
+ 
+;
+; $92
+; read from FRED
+; in:   X = offset
+; out:  Y = value
+ & RFRED
+ 
+;
+; $93
+; write to FRED
+; in:   X = offset,  Y = value
+ & WFRED
+ 
+;
+; $94
+; read from JIM
+; in:   X = offset
+; out:  Y = value
+ & RJIM
+ 
+;
+; $95
+; write to JIM
+; in:   X = offset,  Y = value
+ & WJIM
+ 
+;
+; $96
+; read from SHEILA
+; in:   X = offset
+; out:  Y = value
+ & RSHEIL
+ 
+;
+; $97
+; write to SHEILA
+; in:   X = offset,  Y = value
+ & WSHEIL
+ 
+;
+; $98
+; examine character in buffer
+; in:   X = bufferid
+; out:  C=0 => Y=character
+;       C=1 => buffer empty
+ & EXAM
+ 
+;
+; $99
+; insert character into buffer dealing with ESC code
+; in:   X = bufferid,  Y = character
+ & RNSRT
+ 
+;
+;; $9A
+; update vidproc control register
+; in:   X = value
+ & VP0
+ 
+;
+; $9B
+; update vidproc palette register
+; in:   X = value EOR $07
+ & VP1
+ 
+;
+; $9C
+; update 6850 ACIA
+; in:   X = value,  Y = mask
+ & RS423
+ 
+;
+; $9D
+; fast tube BPUT
+; in:   X = byte,  Y = handle
+ & FXBPUT
+ 
+;
+; $9E
+; read from speech chip
+; in:   Y = command
+; out:  Y = result
+ & RSPECH
+ 
+;
+; $9F
+; write to speech chip
+; in:   Y = command
+ & WSPECH
+ 
+;
+; $A0
+; read VDU variables
+; in:   X = index
+; out:  X = variable0, Y = variable1
+ & VDUVAR
+ 
+;
+BYTEH * .-BYTET2:SHR: 1+BYTEM ;next entry in BYTET table (hi component)
+;
+ & SETV  ;set variable
+ 
+;
+ & JMIUSR ;OSWORD calls >=$E0
+ 
+
+
+WORDT  ;table for OSWORD. N.B. lo-byte followed by hi-byte
+;
+ & RDLN ;read line; $00
+ 
+;
+ & RATM ;read absolute time; $01
+ 
+;
+ & WATM ;write absolute time; $02
+ 
+;
+ & RITM ;read interval time; $03
+ 
+;
+ & WITM ;write interval time; $04
+ 
+;
+ & PEEK ;PEEK; $05
+ 
+;
+ & POKE ;POKE; $06
+ 
+;
+OSWSND * .-WORDT:SHR: 1
+;
+ & NOTE ;sound; $07
+ 
+;
+ & NVLP ;define envelope; $08
+ 
+;
+ & RPXLXY ;read pixel at given coordinate to X; $09
+ 
+;
+ & RCHDEF ;read character definition of XY to XY+1..8; $0A
+ 
+;
+ & RPALET ;read palette for XY to XY+1..4; $0B
+ 
+;
+ & PRPAL ;programme palette; $0C
+ 
+;
+ & CSREAD ;cursor read; $0D
+ 
+;
+WORDN * .-WORDT:SHR: 1 ;number of entries in WORDT table
+
+
+MCODE  ;call user code
+ LDAIM ZERO
+JMIUSR JMI USRVEC ;user OSBYTE call/OSWORD calls
+
+
+; OSBYTE specific routines
+; N.B. routines must exit with PLP to restore
+;      caller's interrupt state
+CESCP  ;clear escape flag and purge selected input buffer
+ LDXIM ZERO ;indicate escape not cleared
+ BIT ESCFLG
+ BPL CESCPC ;[no escape to clear]
+; bypass procedure ?
+ LDA EAOPT
+ BNE CESCX ;[bypass normal acknowledge procedure]
+; Z=1, A=$00
+; close exec file
+ CLI ;********** (close may be a long operation)
+ STA LINES ;reset page mode page origin
+ JSR EXEC ;just close exec file, N.B. needs Z=1, A=$00
+; flush all buffers and clear soft key expansion
+ JSR FLSHAL ;N.B. also kills sound AND cancels VDU queueing
+CESCX
+ LDXIM &FF ;indicate escape cleared
+CESCPC  ;clear system escape flag
+ CLC
+CESCPS  ;set system escape flag (N.B. C=1)
+ ROR ESCFLG
+ BIT TUBEM
+ BMI TESC ;[tube active]
+ RTS
+;
+TESC
+ JMP TBESC ;tube escape
+
+
+MOTOR  ;control cassette motor
+; on entry: X=0  => motor off
+;           X<>0 => motor on
+; N.B. previous instruction was LDX
+ LDA SPREGA
+ TAY ;Y := old value
+;
+ ROLA
+ CPXIM &01 ;C=0 => X=0,  C=1 => X<>0
+ RORA
+ BVC STASP ;[ALWAYS jump]
+
+
+TXBAUD  ;set RS423 transmit baudrate (N.B. A=$08)
+ LDAIM &38
+RXBAUD  ;set RS423 receive baudrate (N.B. A=$07)
+ EORIM &3F ;Rx: A=$38,  Tx: A=$07
+ STA MASK
+ LDY SPREGA
+ CPXIM &09
+ BCS BAUD1 ;[bad baud selection]
+ ANDAX BAUDS ;extract serproc baud bits
+ STA BAUD
+ TYA
+ ORA MASK
+ EOR MASK ;clear slot for baudrate
+ ORA BAUD
+ ORAIM &40 ;set cassette/RS423 bit
+ EOR RSCASS ;select cassette/RS423
+;
+STASP  ;used by MOTOR and RESET
+ STA SPREGA
+ STA SERPRC
+;
+BAUD1
+TYATAX  ;used by TXBAUD, RXBAUD, FSPC, FMRK
+ TYA
+BADEVT
+ TAX ;X := old value (bad events appear disabled)
+ RTS
+
+
+FMRK  ;set flash mark, Y=0, C=1
+ INY
+ CLC
+;
+; Y=1, C=0
+;
+FSPC  ;set flash space, Y=0, C=1
+ LDAAY FLASHB
+;
+ PHA
+ TXA
+ STAAY FLASHB
+ PLA
+;
+ TAY
+;
+; C=0 => mark,  C=1 => space
+; FMS0 exit used, despite X not being corrupted
+; (makes code clearer)
+ LDA FLCNT
+ BNE FMS1 ;[flash enabled]
+; 'kick' flash count
+ STX FLCNT
+; force mark/space (lsb VPREGA := C)
+ LDA VPREGA
+ PHP
+ RORA
+ PLP
+ ROLA
+ STA VPREGA
+ STA VPROC0
+FMS1  ; chain from clear escape condition routine
+ BVC TYATAX ;[ALWAYS jump]
+
+
+SELIN  ;select input
+ TXA
+ ANDIM &01 ;force legal bufferid
+ PHA ;save change
+ LDA RSCTFL ;A := old state of controller status
+ ROLA
+ CPXIM &01 ;C=0 => disable RS423,  C=1 => enable RS423
+ RORA ;A := new state of controller status
+; *FX 2,0 disables RS423,  *FX 2,(1,2) enables RS423
+; if RS423 then enable RS423 Rx interrupt
+ CMP RSCTFL
+ PHP
+ STA RSCTFL
+ STA RSCTL ;update RS423 control register
+ JSR RSETX ;set RHITXE if possible
+ PLP
+ BEQ SELIN1 ;branch if no change
+ BIT RSDATA ;purge character in controller
+; this purges data register if: disabled state -> enabled state
+; this does not matter if:      enabled state  -> disabled state
+SELIN1
+ LDX RDCHSW ;X := old value
+ PLA
+ STA RDCHSW ;update value
+ RTS
+
+
+MDSABL  ;disable event X
+; N.B. Y=0
+ TYA ;A := 0
+;* LDAIM ZERO
+ENABLE  ;enable event X (N.B. A<>$00)
+ CPXIM NEVENT
+ BCS BADEVT
+ LDYAX EVENTS
+ STAAX EVENTS
+;
+ BVC TYATAX ;[ALWAYS jump]
+
+
+SETADC  ;set number of ADC channels to scan
+; N.B. preceeding instruction was LDX
+; Y=0
+ BEQ SETAD1 ;[kill ADC (eventually)]
+ JSR ADCBEG ;initiate conversion on channel X, uses Y=0
+; N.B. X not corrupted
+SETAD1
+; a value of X=0 stops the ADC after the next (external) channel 1
+; conversion
+ LDA MAXADC
+ STX MAXADC
+ TAX ;X := old value
+ RTS
+
+
+INKY  ;read key with time limit
+ TYA
+ BMI RDKY
+ CLI ;**** ENABLE INTERRUPTS
+ JSR INKEY
+ BCS INKY1 ;[escape detected or count exhausted]
+;
+; character read
+;
+ TAX ;X := character (INKEY) or lo-count (BUFN)
+ LDAIM ZERO ;Y = 0 => success
+;
+INKY1  ;escape detected or count exhausted, C=1
+ TAY ;Y < $80 => escape, Y >= $80 => count exhausted
+ RTS
+
+
+RDKY  ;C=1, V=0, read key addressed by X
+; N.B. interrupts disabled
+;
+; test key at matrix address
+;
+ [ $Tutu
+        LDAIM   &81
+        =       ar_byte
+        TXA
+        ROLA
+        NOP
+        NOP
+        NOP
+ |
+ TXA
+ EORIM &7F
+ TAX
+ JSR JMIKEY
+ ROLA ;result into C
+ ]
+;
+BADADC  ;entered with C=1
+RMHA  ;entered with C=1
+; C=0 => return 0,  C=1 => return -1
+ LDXIM &FF ;N.B. I/O processor is notionally located at address $FFFFxxxx
+ LDYIM &FF
+ BCS RDKY0
+; INKEY entry (key open)
+ INX ;X=0
+; invalid soft key read, return Y<>0
+ INY ;Y=0 (except for soft key read entry)
+RDKY0
+ RTS
+
+
+BUFN  ;count entries in buffer, called by FX ADVAL with negative argument
+; -N gives count for buffer with external id N
+; C=1 (by FX conventions)
+ TXA
+ EORIM &FF
+ TAX ;X := bufferid
+;
+; count entries (in)/(remaining in) buffer given by X
+; returns:
+; number of entries present for input buffers
+; number of entries remaining for output buffers
+;
+ CPXIM OUTPUT
+; C=0 => count used entries
+; C=1 => count free slots
+;
+JMICNT
+ CLV ;V=0 => count buffer entry
+ BVC JMICNP ;[ALWAYS jump]
+;
+JMIPUR BIT FFBYT ;V=1
+JMICNP JMI CNPVEC ;use indirection (defaults to CNP)
+; return count in X (lo) and Y (hi)
+
+
+CNTRS  ;count bytes left in RS423 input buffer
+ SEC ;count empty slots left ...
+ LDXIM BRSI ;... in RS423 input buffer
+ JSR JMICNT
+; count in Y (hi) and X (lo)
+ CPYIM &01
+ BCS CNTRS0 ;[more than RSOVER bytes left]
+;
+ CPX RSHLVL
+;
+CNTRS0
+; C=0 => overflow
+; C=1 => no overflow
+ RTS
+
+
+RADCX  ;read ADC channel X
+ BMI BUFN ;[count entries in buffer]
+ BEQ FIRE ;[get status of fire buttons]
+ CPXIM &05
+ BCS BADADC
+; return latest conversion
+ LDYAX ADCHIV -&01
+ LDAAX ADCLOV -&01
+ TAX ;X := lo-byte
+ RTS
+
+
+FIRE  ;get status of fire buttons
+; X=0
+ LDA PBQ
+ RORA
+ RORA
+ RORA
+ RORA
+ EORIM &FF
+ ANDIM &03 ;A := fire buttons
+ LDY ADCFLG ;return latest conversion number
+; clear latest conversion number
+ STX ADCFLG
+ TAX ;return status of fire buttons in b0 and b1
+ RTS
+
+
+ LNK MOS46

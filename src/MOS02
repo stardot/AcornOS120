@@ -1,0 +1,516 @@
+
+ TTL VDU File - MOS02
+ OPT MOS02
+
+;Last revision 30/04/82
+
+;30/04/82  Recoded to allow for reverse queueing
+;19/04/82  To put ASCIQ in line, and various other byte savings
+;19/11/81  No longer include bell in printer range check
+
+
+;ENTRY POINT - SELECT ROUTINE
+
+
+VDU
+ LDX QPOSN ;Are we Qing ?
+ BNE QING ;Yes?, then queue this byte
+ BIT STATS
+ BVC NOTCEA ;In C.E. mode?
+ JSR CSWAP ;Yes?, then swap cursors
+ JSR OCSRDL ;Delete the output cursor
+ BMI NOTCEA ;Are we disabled ? then skip
+ CMPIM TRMCH ;No?, then is this TRMCH ?
+ BNE NOTCEA
+ JSR CSEDEX ;Yes?, then exit C.E. mode
+NOTCEA CMPIM &7F ;No?, then form vector
+ BEQ ISDEL
+ CMPIM &20
+ BCC NOTDEL ; Branch if unprintable
+ BIT STATS ;Printable - are we disabled ?
+ BMI NOTC20 ;Yes, then print it if print module on
+ JSR VDUPR ;No?, then print to VDU
+ JSR HT
+NOTC20 JMP CSWDEX ;& ditto
+
+ISDEL LDAIM &20 ;(Form correct index for DEL)
+
+NOTDEL TAY
+ LDAAY JTBLO ;Get LSByte of jump vector
+ STA JVEC
+ LDAAY JTBHI ;Get MSByte
+ BMI REXEC ;No Qing required, so execute routine
+ TAX  ;b7=0, so Q needed - set it up
+ ORAIM &F0 ;2's comp. of no. of bytes to Q
+ STA QPOSN
+ TXA  ;Generate MSByte of address - MSNybble, plus CODORG
+ LSRA
+ LSRA
+ LSRA
+ LSRA
+ CLC
+ ADCIM CODORG ;Forms the high byte of the vector
+ STA JVEC +&01
+ BIT STATS ;Swap back again if C.E.
+ BVS NOTC10
+ CLC
+ACK RTS  ;NUL points at this to save a byte
+
+
+QING STAAX QEND-&FF  ;Q the byte
+ INX
+ STX QPOSN ;(z preserved from INX)
+ BNE CLCEX ;More to do?, then exit
+ BIT STATS  ;Disabled?, then go away
+ BMI DISABL
+ BVS NOTCEB ;C.E. mode, then do swapping
+ JSR RUNNER
+ CLC
+ RTS
+
+NOTCEB JSR CSWAP
+ JSR OCSRDL
+ JSR RUNNER
+NOTC10 JSR REXE10
+CLCEX CLC
+ RTS
+
+DISABL LDY JVEC +&01 ;Was this an SOH ?
+ CPYIM /(SOH )
+ BNE CLCEX ;No?, then go home
+
+SOH TAX ;Yes, then (A)=Byte to be printed
+ LDA STATS ;Is printing enabled ?
+ LSRA
+ BCC ACK
+ TXA
+ JMP PRINT ;print character and return, setting c=0 (done by MOS)
+
+REXEC
+ STA JVEC +&01
+ TYA  ;Is it range $08 to $0D ? (no longer include bell)
+ CMPIM &08
+ BCC REXECZ ;Set c if so
+ EORIM &FF
+ CMPIM &F2
+ EORIM &FF
+REXECZ
+;
+ BIT STATS ;Execute routine - are we disabled ?
+ BMI ACKQ ;Was it an ACK? (can't be an SOH cos she queues)
+;
+ PHP  ;and push c
+ JSR RUNNER ;Do the routine
+ PLP
+ BCC REXECB ;Not in range 8 to $D, so not don't print it
+CSWDEX LDA STATS ;Is printer module on?
+ LSRA  ;c=1 if so
+REXECB BIT STATS ;Following preserves c
+ BVC ACK ;Not C.E. so exit
+REXE10 JSR OCSRWR ;Write output cursor
+
+;CSWAP - swap input and output text cursors
+;        invert b1 of STATS
+
+CSWAP PHP  ;Preserve carry
+ PHA
+ LDXIM CSX-V
+ LDYIM PCSX-V
+ JSR SWAP2
+ JSR TADDRY ;Address this point
+ JSR CSDSP
+ LDA STATS
+ EORIM &02 ;Invert bit 1 of STATS
+ STA STATS
+ PLA
+ PLP  ;Restore c
+ RTS
+
+ACKQ
+; C=0 => character not printable,  C=1 => printable
+ EORIM ACKASC ;Was it an ACK ?
+ BNE VDURTS ;[not ACK]
+;
+; C=0 cos ACK not printable
+ LDAIM &7F ;Yes?, then clear b7 of STATS
+ BCC STTAND ;always jump
+
+
+
+;Test to see if printable ($20-$7E or $80-$FF)
+;Returns c=1 iff printable, c=0 otherwise
+
+
+;ANOMQ Returns z=0 iff cursors joined
+
+ANOMQ LDA STATS
+ ANDIM &20 ;Is b5 set ? (Answer to z)
+VDURTS
+ RTS ;Returns(A)=0 if b5 clear
+
+;INDIVIDUAL ROUTINES
+
+;NUL ($00) - do nothing
+
+;Jump table points to ACK, an RTS, to save a byte
+
+;SOH ($01) - Next char to printer
+
+;This is taken care of above
+
+
+;SO ($0E) - Page mode on
+
+SO LDYIM &00 ;Initialise LINES
+ STY LINES
+ LDAIM &04 ;Set b2 of STATS
+ BNE STTOR
+
+;SI ($0F) - Page mode OFF
+; This is frigged below
+
+;STX ($02) - Start printer
+
+STX JSR mUPT ;inform network (A assumed to contain $02)
+ LDAIM &94 ;Set bit 0 of STATS. This maps to $01
+
+;NAK ($15) - Turn VDU off
+
+NAK EORIM &95 ;Set b7 of STATS. Map $15 to $80
+
+STTOR ORA STATS
+ BNE STTEXT ;(branch always taken unless ORed with 0)
+
+
+;ETX ($03) - Stop printer
+
+ETX JSR mUPT ;inform network (A assumed to contain $03)
+ LDAIM &0A ;clear bit 0 of STATS. Maps $0A on to $FE
+
+SI EORIM &F4 ;Clears b2 of STATS. Maps $0F on to $FB
+
+STTAND AND STATS
+STTEXT STA STATS
+EOTEXT RTS
+
+
+;EOT ($04) - Separate cursors
+
+EOT LDA NPIX ;Is this a graphics mode ?
+ BEQ EOTEXT ;NO, then return
+ JSR ETCA ;Redisplay old cursor
+ LDAIM &DF ;Clear b5 of STATS
+ BNE STTAND ;(branch always taken)
+
+;ENQ ($05) - Join cursors
+;Store & hide current cursor
+;Set bit 5 of STATS
+
+ENQ LDA NPIX ;Is this a graphics mode ?
+ BEQ EOTEXT ;NO, then return
+;Access R10 OF 6845. NB cannot do this through CRTCP.
+ LDAIM &20 ;Hide cursor
+ JSR ETCB ; Preserves flags
+ BNE STTOR ;Set bit 5 of STATS, (A) preserved by ETCB
+
+;ACK ($06) - Turn VDU drivers on again
+;Clear bit 7 of STATS
+
+;Taken care of above
+
+;BELL ($07) - Ring BELL
+
+;The routine BELL is externally declared in file UADE90
+
+;Cursor primitives
+
+;BS ($08) - Cursor left 1 character position
+
+BS JSR ANOMQ
+ BNE CSAL
+
+;Cursor left
+
+CSL DEC CSX
+ LDX CSX ;Over LH margin ?
+ CPX TWLCOL
+ BMI CSLC ;Yes, then up (see below) a line
+ LDA CSPOSN ;Move cursor left
+ SEC
+ SBC BYTCH
+ TAX
+ LDA CSPOSN +&01
+ SBCIM &00
+ CMP BEGSCN ;Wraparound ?
+ BCS CSLA
+ ADC BYTSCN ;Yes, then add screen
+CSLA TAY
+ JMP CSDSPA
+
+CSLC LDA TWRCOL ;Put csr = RH edge
+ STA CSX ;& fall through to ...
+
+;Cursor up
+
+CSU DEC LINES ;One more line to print before page mode occurs
+ BPL CSUC
+ INC LINES ;At top of page, so don't go -ve!
+CSUC LDX CSY ;Cursor on top row ?
+ CPX TWTROW
+ BEQ CSUA ;Yes, then scroll
+ DEC CSY
+ JMP CSDA
+
+CSUA CLC
+ JSR ENSCRL ;Account for scroll disable
+ LDAIM &08 ;Test hard/soft flag
+ BIT STATS
+ BNE CSUB ;S3 set, soft scroll
+ JSR HSCRDN ;S3 clear, hard scroll
+ BNE CSUD ; HSCRDN returns zero false
+CSUB JSR SSCRDN
+CSUD JMP CSDC
+CSAL LDXIM &00
+; And fall through to
+
+;Move graphics cursor 1 character - primitives.
+;(X) = 0 if X cursor to be moved
+;      2 if Y cursor to be moved
+;Iff (X)=0, then if off window, LF/VT occurs
+;If cursor crosses margin, then goes to opposite margin.
+;Go down 1 character location
+
+GCSCHD STX ZTEMP +&01 ;Store offset
+ JSR WINDCS ;Window current cursor (result to ZTEMP)
+ LDX ZTEMP +&01 ;Subtract 8 from cursor
+ SEC
+ LDAAX GCSIR
+ SBCIM &08
+ STAAX GCSIR
+ BCS GCSHDA
+ DECAX GCSIR+&01
+GCSHDA LDA ZTEMP ;Get window
+ BNE GCSHDB ;Out of window to begin with?, then skip
+ JSR WINDCS ;Window current point
+ BEQ GCSHDB ;Still inside? , then return
+ LDX ZTEMP +&01 ;Gone outside?, then go to high margin
+ LDAAX GWRCOL
+ CPXIM &01 ;Plot by X?, then back up 1 character
+ BCS GCSHDC
+ SBCIM &06 ;c=0. so subt. 7 to get char. just on screen
+GCSHDC STAAX GCSIR
+ LDAAX GWRCOL+&01
+ SBCIM &00
+ STAAX GCSIR+&01
+ TXA  ;Plot by X?, then go up a line as well
+ BEQ CSAU
+GCSHDB JMP IEG
+
+
+;VT ($0B) - Cursor up 1 character line
+
+VT JSR ANOMQ
+ BEQ CSU
+CSAU LDXIM &02
+ BNE GCSCHU ;(branch always taken)
+
+;HT ($09) - Cursor right 1 character position
+
+HT LDA STATS ;Encode ANOMQ because this routine often referenced
+ ANDIM &20
+ BNE CSAR
+
+;Cursor right
+
+CSR LDX CSX ;Cursor over RH col ?
+ CPX TWRCOL
+ BCS CSRC
+ INC CSX
+ LDA CSPOSN
+ ADC BYTCH ;Add no. bytes per char
+ TAX
+ LDA CSPOSN +&01 ;to posn. of csr.
+ ADCIM &00 ;sets n for test in CSDSPA
+ JMP CSDSPA
+CSRC LDA TWLCOL ;Put csr = LH edge
+ STA CSX ;& fall through to ...
+
+;Cursor down
+
+CSD CLC ;do not set LEDs on first test for page wait (MOS requirement)
+ JSR PAGE ;Account for page mode
+ LDX CSY ;Is cursor off bottom?
+ CPX TWBROW
+ BCS CSDD ;Yes, then scroll
+ INC CSY ;No, then move down line
+ BCC CSDA ;(branch always taken)
+
+CSDD JSR ENSCRL ;Account for scroll disable
+ LDAIM &08 ;Test hard/soft flag
+ BIT STATS
+ BNE CSDB
+ JSR HSCRUP ;No windows set, so use hard scroll
+ BNE CSDC ; HSCRUP unsets zero
+CSDB JSR SSCRUP ;Windows set, so use soft scroll
+CSDC JSR CLTLIN ;Clear the line on which CSY lies
+CSDA JSR TADDRY ;address the cursor, point guaranteed in window
+ BCC FSD ;and display it (TADDRY returns carry clear)
+CSAR LDXIM &00
+; And fall through to
+
+;Move graphics cursor 1 character - primitives.
+;(X) = 0 if Y cursor to be moved
+;      2 if X cursor to be moved
+;Iff (X)=0, then if off window, LF/VT occurs
+;If cursor crosses margin, then goes to opposite margin.
+
+GCSCHU STX ZTEMP +&01 ;Store offset
+ JSR WINDCS ;Window current cursor (result to ZTEMP)
+ LDX ZTEMP +&01 ;Add 8 to cursor
+ CLC
+ LDAAX GCSIR
+ ADCIM &08
+ STAAX GCSIR
+ BCC GCSHUA
+ INCAX GCSIR+&01
+GCSHUA LDA ZTEMP ;Get window
+ BNE GCSHDB ;Out of window to begin with?, then skip
+ JSR WINDCS ;Window current point
+ BEQ GCSHDB ;Still inside? , then return
+ LDX ZTEMP +&01 ;Gone outside?, then go to low margin
+ LDAAX GWLCOL
+ CPXIM &01 ;Plot by Y?, then go up a line
+ BCC GCSHUC
+ ADCIM &06 ;c=1, so add 7 to get char. just on screen
+GCSHUC STAAX GCSIR
+ LDAAX GWLCOL+&01
+ ADCIM &00
+ STAAX GCSIR+&01
+ TXA  ;Plot by X?
+ BEQ CSAD ;Yes?, then go down a line as well
+ JMP IEG ;No?, then exit
+
+
+;LF ($0A) - Cursor down 1 character line
+
+LF JSR ANOMQ
+ BEQ CSD
+CSAD LDXIM &02
+ JMP GCSCHD
+
+;FS ($1C) Define text area
+
+;QEND-3 = L.H. margin  = TWLCOL
+;QEND-2 = Bottom row   = TWBROW
+;QEND-1 = R.H. margin  = TWRCOL
+;QEND   = Top row      = TWTROW
+
+FS LDX MODE
+ LDA QEND-&02 ;Do y co-ordinates. Get bottom (higher numbered) row
+ CMP QEND ;Top row above bottom ?
+ BCC PRACX ;No?, then fail
+ CMPAX PROWS ;Is > max. no. rows?
+ BEQ FSC
+ BCS PRACX ;Yes, then fail
+FSC LDA QEND-&01 ;Do x co-ordinates. Get RH margin
+ TAY
+ CMPAX PCOLS ;Is > than max. cols?
+ BEQ FSB
+ BCS PRACX ;Yes, then fail
+FSB SEC
+ SBC QEND-&03 ;How many cols. wide ?
+ BMI PRACX ;Fail if -ve no. cols.
+ TAY
+ JSR SETPWW ;Set PWWDTH
+ LDAIM &08 ;Set bit 3 for soft scrolling
+ JSR STTOR
+ LDXIM QEND-&03-V ;copy Q to TWxxxx
+ LDYIM TWLCOL-V
+ JSR COPYF
+ JSR TADDR ;Is cursor still inside
+ BCS RS ;No, then home cursor
+FSD JMP CSDSP
+
+RPXLXY
+ LDYIM &03 ;~~~ Read pixel at (x,y) ~~~
+PRAAA LDAIY WARGS ;Copy (x,y) to RPXLWS ...
+ STAAY RPXLWS
+ DEY
+ BPL PRAAA
+ LDAIM RPXLWS-V ;Convert in internal co-ordinates
+ JSR RPXLD ;Read pixel if extant
+ LDYIM &04 ;Store in (XY) +4
+ BNE PRACB ;(branch always taken)
+
+RPALET
+ AND NCOLOR ;Read parrot
+ TAX
+ LDAAX PARROT
+PRACA INY
+PRACB STAIY WARGS
+ LDAIM &00
+ CPYIM &04
+ BNE PRACA
+PRACX RTS
+
+;FF ($0C) Form feed
+
+FF JSR ANOMQ ;Cursors joined ?
+ BNE FFANOM ;Yes, then clear graphics area
+ LDA STATS ;Window set ?
+ ANDIM &08 ;Test bit 3 of STATS
+ BNE FFA ;Set?, then window clear
+ JMP CLATXT ;Clear?, then fast clear
+FFA LDX TWTROW ;Initialise cursor to top row
+FFB STX CSY ;Clear this line
+ JSR CLTLIN
+ LDX CSY ;Move down a line
+ CPX TWBROW ;On the bottom ?
+ INX
+ BCC FFB ;(INX preserves c)
+
+;& fall through to
+
+
+;RS ($1E) Home character cursor
+
+RS JSR ANOMQ
+ BEQ RSA
+ JMP RSAN
+RSA STA QEND
+ STA QEND-&01
+
+;& fall through to ....
+
+;US ($1F) Move text csr to x,y
+
+;Put cursor to (x,y), where
+;x in QEND-1 & y in QEND
+;If illegal, leave cursor alone
+
+US JSR ANOMQ ;Cursors joined ?
+ BNE PRACX ;Yes, then skip
+ JSR USAF ;Remember current cursor
+ CLC
+ LDA QEND-&01 ;Add offset to x posn
+ ADC TWLCOL
+ STA CSX
+ LDA QEND ;Add offset to y posn
+ CLC
+ ADC TWTROW
+ STA CSY
+ JSR TADDR ;Attempt to posn. csr
+ BCC FSD ;to a JMP CSDSP
+
+USAF LDXIM CSX-V
+ LDYIM USWS-V
+ JMP SWAP2
+
+;CR ($0D) Carriage return
+
+CR JSR ANOMQ
+ BEQ CRA
+ JMP CRAN
+CRA JSR SSCRIM ;Position cursor to LH edge of window
+ JMP CSDA ;Display cursor & TADDR
+ LNK MOS03

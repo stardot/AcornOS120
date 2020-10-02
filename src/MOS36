@@ -1,0 +1,808 @@
+; > MOS36
+ TTL MOS36         Int servicing
+ OPT MOS36
+
+;(c) 1981 ACORN Computers Limited
+;BBC MOS
+;Change record:
+
+;Author(s):
+;PB     Paul Bond
+
+; interrupt service mainline
+; priority sequence:-
+; [6850]
+; 1. RS423
+; [6522a]
+; 2. VSYNC
+; 3. centisecond timer
+; 4. ADC
+; 5. keyboard
+; [6522b]
+; 6. printer (parallel interface)
+
+
+RPROM  ;read byte from paged ROM
+; read byte at ROMPTR in ROM Y into A
+ LDX ROMID
+ STY ROMID
+ STY ROM
+ LDYIM ZERO
+ LDAIY ROMPTR
+STXROM
+ STX ROMID
+ STX ROM
+ RTS
+
+
+
+IRQ  ;entered at IRQ or BRK
+ STA TEMPA
+ PLA
+ PHA ;A := processor status
+ ANDIM &10
+ BNE BRK
+ JMI IRQALL ;indirect thru 'all IRQs' routine
+; (defaults to DEFIRQ)
+;
+BRK
+ TXA
+ PHA ;save X
+ TSX
+ LDAAX &0100+&03 ;get address low
+ CLD
+ SEC
+ SBCIM &01
+ STA REPTR +&00
+ LDAAX &0100+&04 ;get address high
+ SBCIM ZERO
+ STA REPTR +&01
+; record ROM source of BRK
+ LDA ROMID
+ STA REPROM
+; offer BRK to service ROMs
+ STX BYTEX ;provide clean way for service ROM to access relevant stack area
+ LDXIM SVBRK
+ JSR SVOP
+; force language ROM (may be BASIC in pre-interface days)
+ LDX LROMID
+ JSR STXROM ;reset to language ROM
+;
+; restore X
+;
+ PLA
+ TAX
+;
+; restore A
+;
+ LDA TEMPA
+;
+; enable interrupts and let user process BRK
+;
+ CLI
+ JMI BRKVEC ;process BRK, N.B. default is DEFBRK
+;
+DEFBRK  ;default BRK routine outputs error message
+; assume still decimal mode
+ LDYIM ZERO
+ JSR WRSTR1 ;output error message
+; check whether within auto-boot program
+ LDA QUIET
+ RORA
+STOP
+ BCS STOP ;hang if not within auto-boot program
+ JSR OSNEWL
+ JSR OSNEWL ;place 2*CR/LF after error message
+ JMP EBRK ;system continue
+
+
+
+ TTL IRQ processing
+ OPT OPNEWP
+
+
+TXDINT  ;disable Tx interrupt
+;
+; RS423 printer selected but printer buffer empty
+;
+ SEC
+ ROR RSFLAG ;flag RS423 available
+;
+; no more characters to print
+;
+; disable RS423 Tx
+; find whether to set RTS hi or lo
+;
+; check whether RS423 Rx enabled
+;
+ BIT RSCTFL
+ BPL RLO ;[Rx disabled]
+;
+; Rx enabled
+;
+; check bytes in RS423 input buffer
+;
+ JSR CNTRS
+;
+; C=0 => overflow,  C=1 => no overflow
+; check whether within overflow region
+;
+ LDXIM RHITXD
+ BCS RSOK ;[not overflowing]
+;
+; within overflow region
+;
+RLO  ;set RTS lo, Tx interrupt disabled (unfortunately)
+ LDXIM RLOTXD
+;
+RSOK  ;set RTS hi/lo, Tx interrupt disabled
+ JMP RSED ;disable Tx interrupts AND return from interrupt
+
+
+RX68  ;RS423 Rx interrupt
+;
+; A = 0|0|PE|OVRN|FE|CTS|DCD|TDRE
+;
+ LDY RSDATA ;read data byte to clear interrupt
+ ANDIM &3A ;CTS & TDRE are not relevant to Rx
+ BNE RX68BD ;[bad Rx, PE|OVRN|FE|DCD]
+;
+; good reception - move byte into RS423 input buffer
+;
+ LDX RSSHUT
+ BNE NRSI ;[suppress RS423 input]
+;
+; X=0
+;
+ INX ;X = BRSI = $01
+ JSR RNSRT ;insert character into RS423 buffer
+;
+; check number of characters in buffer
+;
+ JSR CNTRS
+;
+; check whether running into overflow area
+;
+ BCC RLO ;[running into overflow area, set RTS lo, Tx interrupt disabled]
+NRSI  ;suppress RS423 input
+ RTS
+
+
+DEFIRQ  ;default IRQ routine
+ CLD
+ LDA TEMPA
+ PHA
+ TXA
+ PHA
+ TYA
+ PHA
+;
+; schedule return from interrupt
+;
+ LDAIM /(IRQ0-&01)
+ PHA
+ LDAIM IRQ0-&01
+ PHA
+;
+; indicate in DEFIRQ
+;
+ CLV
+;
+IRQ68  ;check for interrupt from 6850
+;
+ [ $Tutu
+        LDAIM   &00             ; No 6850 emulation
+        NOP
+ |
+ LDA RSTAT
+ ]
+ BVS RSTIME ;[timer interrupt]
+;
+ BPL IRQA ;[not a 6850 interrupt, N.B. possibly timer interrupt entry]
+;
+RSTIME  ;timer interrupt
+;
+; 6850 interrupt
+;
+; use RSTUT to decide where to route the interrupt
+;
+ LDX RSTUT
+ DEX
+ BMI NOTCFS ;[RS423 not managed by CFS]
+;
+; inform CFS of the interrupt
+;
+ BVS RTS68 ;[ignore timer interrupt entry]
+ JMP IRUPT ;let CFS handle interrupt AND return from interrupt
+
+
+MDCD  ;neither Rx not Tx interrupt => DCD interrupt
+;
+ LDY RSDATA ;clear DCD interrupt
+ ROLA ;DCD -> lo-bit
+ ASLA ;restore status byte
+;
+RX68BD  ;bad RS423 Rx
+;
+; A = 0|0|PE|OVRN|FE|0|DCD|0
+; C=1
+;
+; signal RS423 error
+;
+ TAX ;X := status
+ TYA ;A := character
+ LDYIM EVRS ;RS423 error event
+ JMP EVENT ;signal event AND return from interrupt
+
+
+TDRE  ;Tx interrupt
+;
+; RS423 is not claimed by CFS, so we are either
+; writing or printing to RS423
+;
+; extract character from RS423 Tx buffer
+;
+ LDXIM BRSO
+ JSR REMOV
+ BCC TXCH ;[character to transmit]
+; X=BRSO
+;
+; check for print to RS423
+;
+ LDA PRNTSW
+ CMPIM PRS
+ BNE TXDINT ;[RS423 printer not selected]
+; X=BRSO
+;
+; remove possible character from print buffer
+;
+ INX ;X = BRSO+1 = BPRNT
+ JSR REMOV ;remove character from printer buffer
+ ROR PFLAG ;update printer flag
+ BMI TXDINT ;[no character to print]
+;
+TXCH  ;transmit character in A
+;
+ STA RSDATA ;transmit character
+;
+; set RS423 printer timeout active
+;
+ LDAIM PTIMUT
+ STA RSTUT
+;
+
+RTS68
+UNK0
+ RTS ;return from interrupt
+
+
+NOTCFS  ;RS423 not managed by CFS
+;
+ AND C6850 ;suppress bits according to user tastes
+ LSRA ;C=Rx
+ BCC NOTRX ;[not Rx int]
+ BVS NOTRX ;[do not allow Rx by polling]
+;
+ LDY RSCTFL
+ BMI RX68 ;[recieve interrupts enabled]
+;
+NOTRX
+ LSRA ;C=Tx,  N=Rx
+ RORA ;C=DCD,  N=Tx
+ BCS MDCD ;[DCD interrupt]
+;
+ BMI TDRE ;[TDRE]
+;
+ BVS RTS68 ;[timer interrupt entry]
+;
+; not timer interrupt entry
+;
+UNKIRQ  ;unknown interrupt
+;
+ LDXIM SVINT
+ JSR SVOP ;allow FS ROMs to process interrupt
+ BEQ UNK0 ;[service ROM dealt with interrupt]
+;
+; pull return address
+;
+ PLA
+ PLA
+;
+; restore X and Y for user interrupt routine
+;
+ PLA
+ TAY
+ PLA
+ TAX
+ PLA
+ STA TEMPA
+ JMI IRQVEC ;assume that user will clear the interrupt
+; (defaults to IRQTWO)
+
+
+
+IRQA  ;check for interrupt from primary 6522
+;
+ LDA IFRQ ;A = IFR [IRQ,TIMER1,TIMER2,CB1,CB2,SHIFTREG,CA1,CA2]
+ BPL IRQB ;[not a VIAA interrupt]
+;
+;
+ AND A6522 ;suppress bits according to user tastes
+ AND IERQ ;N.B. only look at enabled interrupts
+;
+;
+ RORA ;A = IFR >> 1
+ RORA ;A = IFR >> 2, C = CA1, N = CA2
+ BCC ITIME2 ;[not VSYNC interrupt]
+;
+; VSYNC interrupt
+; N.B. C=1
+;
+ DEC CYCLE ;update CFS timeout byte
+ LDA RSTUT ;decrement RS423 printer timeout
+ BPL NPRST
+ INC RSTUT
+;
+NPRST  ;no RS423 printer timeout
+;
+ LDA FLCNT
+ BEQ IVS1 ;[flash disabled]
+ DEC FLCNT
+ BNE IVS1 ;[flash count not exhausted]
+;
+; flash count exhausted
+; reset FLCNT
+;
+ LDX FLSPC
+ LDA VPREGA
+ LSRA ;C = flash bit
+ BCC FLASH1 ;[flash bit = 0]
+; flash bit = 1
+ LDX FLMRK
+FLASH1
+;
+ ROLA ;A = VPREGA
+ EORIM &01 ;invert flash bit
+ JSR MVPRC0 ;update video processor and register image
+ STX FLCNT ;update flash count
+;
+IVS1
+ LDYIM EVVSYN
+ JSR EVENT
+;
+ LDAIM VSYNC
+ JMP IVIAA0 ;clear interrupt and return
+
+
+
+IRQB  ;check for interrupt from secondary 6522
+;
+ LDA IFRR ;A = IFR, C = ?, N = IRQ
+ BPL UNKIRQ ;[not a VIAB interrupt]
+;
+;
+ AND B6522 ;suppress bits if secondary 6522 not present
+ AND IERR ;only look at enabled interrupts
+ RORA ;A = IFR >> 1
+ RORA ;A = IFR >> 2, C = CA1
+ BCC UNKIRQ ;[not a printer interrupt]
+;
+IPRNT  ;printer interrupt
+;
+; acknowledge interrupt
+; N.B. clear before sending next character since printer
+;      may acknowledge quickly and we could miss the interrupt
+ LDY PRNTSW
+ DEY ;******** ASSUMES PCEN = 1 ********
+ BNE UNKIRQ ;[ignore printer interrupt cos centronics not selected]
+;
+ LDAIM PRNT
+ STA IFRR ;acknowledge interrupt
+ STA IERR ;disable printer interrupt
+; (will be enabled again by STROBE if another character is sent
+; using the parallel port)
+;
+ LDXIM BPRNT ;X := print bufferid
+ JMP STROBE ;if character read then print it AND return from interrupt
+
+
+ITIME2  ;check for TIMER2 interrupt
+;
+ ROLA ;A = IFR >> 1
+ ROLA ;A = IFR
+ ROLA ;:A = IFR << 1, N = TIMER1
+ ROLA ;A = IFR << 2, N = TIMER2, C = TIMER1
+ BPL ITIME1 ;[not TIMER2, check for TIMER1 interrupt]
+;
+; timer 2 interrupt
+; acknowledge interrupt
+;
+; and
+;
+; set speech RDY to interrupt again
+;
+ LDAIM TIMER2
+ LDXIM ZERO
+; N.B. minimise time between next two instructions
+ STA IFRQ ;clear interrupt
+ STX TRCHQ ;set to interrupt on speech chip INT
+;
+; process speech request
+;
+PRSPRQ  ;process speech request
+;
+; set speak external repeat counter to 4
+;
+ LDXIM BSPCH
+ STX SPWK2 ;**** ASSUMES BSPCH=8 ****
+;
+SPEREP  ;repeat poke of speak external data
+;
+; inspect speech buffer
+;
+ JSR EXAM
+;
+; record buffer status - MI => dormant,  PL => busy
+;
+ ROR SPSTAT
+ BMI NSPECH ;[buffer empty]
+;
+ TAY
+ BEQ SPOK ;[speak external data]
+;
+; new command - ensure not talking
+;
+ JSR RSPECH
+ BMI NSPECH ;[talking active]
+;
+; new command and not talking
+;
+SPOK  ;speak external data
+;
+; get command byte from speech buffer
+;
+ JSR REMOV
+;
+; codeword in A
+;
+ STA SEROM
+;
+; pull data
+;
+ JSR REMOV
+ STA ROMPTR+&01 ;hi-address / hi-data
+ JSR REMOV
+ STA ROMPTR+&00 ;lo-address / lo-data
+;
+; switch on codeword
+;
+ LDY SEROM
+ BEQ ISP2 ;[command=0, do not treat codeword as a command]
+ BPL ISP3 ;[command>0, speech command without address]
+;
+; command with address
+; command either speak(address) OR read-and-branch(address)
+;
+; check for read and branch request
+;
+ BIT SEROM
+ BVS RAB ;[read and branch]
+;
+; speak(address)
+; load address into speech processor
+;
+; V=0
+ JSR SPLOAD ;N.B. does PHP...PLP
+ BVC ISPX ;[ALWAYS jump]
+;
+RAB  ;read and branch (speak indirect)
+;
+; multiply offset by two
+;
+ ASL ROMPTR+&00
+ ROL ROMPTR+&01
+;
+; reselect address
+;
+ JSR SPLIND ;load address indirect
+;
+ISPX
+ LDY SHUTSP ;command defaults to speech
+ JMP WSPECH ;send command AND return
+;
+;
+ISP3  ;treat codeword as a command
+;
+ JSR WSPECH ;issue codeword command
+;
+ISP2  ;write argument data bytes
+;
+ LDY ROMPTR+&00
+ JSR WSPECH
+ LDY ROMPTR+&01
+ JSR WSPECH
+;
+; repeat poke of speak external data up to 4 times (8 bytes)
+;
+ LSR SPWK2
+ BNE SPEREP ;[try poking more speak external data]
+;
+NSPECH
+ RTS
+
+
+
+ITIME1  ;check for TIMER1 interrupt
+;
+ BCC IADC ;[not TIMER1, check for ADC interrupt]
+; C=1
+;
+; main clock interrupt
+;
+; clear interrupt
+;
+ LDAIM CLOCK
+ STA IFRQ ;acknowledge clock interrupt
+; C=1
+;
+; increment absolute time
+;
+ LDA TIMESW
+ TAX ;X -> current timer
+ EORIM &0F
+ PHA
+ TAY ;Y -> other timer
+; C=1
+;****SEC ;N.B. add 1 to timer
+;
+IT1
+ LDAAX TIME -&01
+ ADCIM ZERO
+ STAAY TIME -&01
+ DEX
+ BEQ IT2
+ DEY
+ BNE IT1
+IT2
+;
+ PLA
+ STA TIMESW ;switch timers
+;
+;
+ LDXIM &05
+IVIAA5
+ INCAX STPW -&01
+ BNE IINKEY
+ DEX
+ BNE IVIAA5
+;
+; stopwatch timeout
+;
+ LDYIM EVSWCH
+ JSR EVENT
+;
+IINKEY  ;decrement INKEY counter
+;
+ LDA RDCTLO
+ BNE IIN1 ;[just decrement lo]
+; lo zero
+ LDA RDCTHI
+ BEQ IIN0 ;[counter zero]
+; decrement lo and hi
+ DEC RDCTHI
+IIN1  ;just decrement lo
+ DEC RDCTLO
+IIN0  ;counter zero
+
+ [ $Tutu ; no sound, no speech shit wanted - nothing from this point on
+        RTS                     ; Return from interrupt
+        NOP
+        NOP
+ |
+;
+;
+; check sound sema to ensure exclusive access to sound code
+;
+ BIT SSEMA
+ ]
+ BPL SINUSE ;[sound software in use]
+;
+; sound software available
+;
+ INC SSEMA ;claim sound sema
+ CLI ;enable interrupts during sound processing
+ JSR SNDIRQ
+ SEI ;disable interrupts after sound processing
+ DEC SSEMA ;release sound sema
+SINUSE
+;
+; give speech a chance
+;
+; check buffer
+;
+ BIT SPSTAT
+ BMI SPBUSY ;[speech buffer empty]
+;
+; read speech chip status
+;
+ JSR RSPECH ;N.B. does not alter A if speech chip not present
+;
+; A>=$80 => busy
+;
+; N.B. if speech chip does not exist then 25% chance that PRSPRQ will
+;      be called, this will just result in a no-operation effect
+;
+ EORIM &A0
+ CMPIM &60
+ BCC SPBUSY ;[100, 101 or 111]
+;
+ JSR PRSPRQ ;process speech request
+;
+SPBUSY  ;speech chip busy
+;
+; check RS423 for possible Tx
+;
+ BIT FFBYT ;indicate timer interrupt call
+ JSR IRQ68
+;
+; check keyboard if keys active
+;
+ LDA CKEY
+ ORA OKEY
+ AND KSEMA ;check for keyboard critical region
+ BEQ ICLK0 ;[no keys active, clear timer interrupt]
+ SEC
+ JSR JMIKYV ;key(s) active, process timer interrupt
+; ******** MAY ENABLE INTERRUPTS (EXITS DISABLED) ********
+;
+ICLK0
+; give user print routine a chance
+ JSR UPTINT
+;
+; the ADC is connected on CB1
+; when port B is read (by keyboard routines) any
+; interrupt is lost, and the ADC must be restarted
+;
+ BIT ADCCTL
+ BVS IADCB ;[ADC not busy]
+ RTS ;return from interrupt
+
+
+IADC  ;check for ADC interrupt
+;
+ ROLA ;A = IFR << 3, N = CB1
+ BPL IKEYBD ;[not an ADC intterupt]
+;
+; ADC interrupt
+; check ADC enabled
+;
+IADCB
+ LDX ADCHAN
+ BEQ IADC0 ;[ADC disabled]
+;
+; read conversion lo byte
+;
+ LDA ADCLO
+ STAAX ADCLOV -&01
+;
+; read conversion hi byte
+;
+ LDA ADCHI
+ STAAX ADCHIV -&01
+;
+; set latest conversion number
+;
+ STX ADCFLG
+;
+; signal ADC conversion event,  X = channel number
+;
+ LDYIM EVADC
+ JSR EVENT
+;
+; step to next channel
+;
+ DEX
+ BNE IADC2 ;[channel >= 1]
+;
+; channel counter underflow
+; reload channel counter
+;
+ LDX MAXADC
+IADC2
+;
+; initiate next conversion
+; X = channel number
+;
+ JSR ADCBGX ;begin conversion, sets ADCHAN=X
+IADC0
+ LDAIM ADC
+IVIAA0  ;return from VIAA interrupt
+ STA IFRQ ;clear interrupt state
+ RTS ;return from interrupt
+
+
+IKEYBD  ;keyboard interrupt check
+;
+ ROLA ;A = IFR << 4
+ ROLA ;A = IFR << 5
+ ROLA ;A = IFR << 6
+ ROLA ;A = IFR << 7, N = CA2
+ BPL JUNKIRQ ;[not keyboard interrupt]
+;
+; C=0 because no VSYNC
+;
+ JSR JMIKYV ;find and set up new current key (enter with C=0)
+; ******** MAY ENABLE INTERRUPTS (EXITS DISABLED) ********
+ LDAIM KEYBD
+ BNE IVIAA0 ;[ALWAYS jump]
+;
+JUNKIRQ JMP UNKIRQ ;IRQ not identified
+
+
+
+IRQ0  ;return from interrupt restoring registers
+ PLA
+ TAY
+ PLA
+ TAX
+ PLA
+ STA TEMPA
+;
+IRQTWO
+ LDA TEMPA
+ RTI
+
+
+ADCBEG  ;begin forced ADC conversion
+;
+; X = external channel number
+; Y = 0
+;
+ STY ADCFLG ;clear conversion number
+;
+ADCBGX  ;begin ADC conversion
+;
+; X = external channel number
+; Y corrupted
+;
+ CPXIM NADC +&01
+ BCC ADCBG1 ;[valid channel number]
+ LDXIM NADC ;force valid channel number
+ADCBG1  ;channel number now valid (but possibly 0)
+;
+ STX ADCHAN
+ LDY ADCCNV ;normally 0, 8 or 12 (0 has same effect as 12)
+ DEY
+ TYA
+ ANDIM &08 ;extract conversion type
+ CLC
+ ADC ADCHAN
+; C=0
+ SBCIM ZERO ;subtract 1, add in INTERNAL channel number (1->0 ... 4->3)
+ STA ADCCTL ;start conversion
+;
+; if X was 0 on entry then a conversion is initiated on channel 3
+; of the opposite conversion type to that expected, but the result
+; of this conversion will be ignored
+;
+ RTS
+
+
+WRSTR  ;write string
+;
+ LDAIM /MSG
+WRSTRA
+ STA REPTR +&01
+ LDAIM ZERO
+ STA REPTR +&00
+WRSTR1
+ INY
+ LDAIY REPTR
+ JSR OSASCI ;write message character
+ TAX
+ BNE WRSTR1 ;[ALWAYS jump, step to next message character]
+; terminator found
+ RTS
+
+
+ LNK MOS38

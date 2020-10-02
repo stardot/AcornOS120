@@ -1,0 +1,270 @@
+
+ TTL VDU File - MOS10
+ OPT MOS10
+
+;Last revision 10/05/82
+
+;10/05/82 Save 1 byte by BCS HPLOT -> BCC TRSRTS
+;05/05/82 HPLOT uses PLOTFF
+;01/05/82 Recoded using manifests & new ordering of static variables
+;07/02/82 Zero height triangles not so disasterous (GPT)
+
+;TRIANGLE PLOTTING
+
+;INITIALISATION
+
+EMC LDXIM NEWPT-V ;Copy new point & graphics cursor to a safe place
+ LDYIM GCSTMP-V
+ JSR COPY8
+ JSR SORTA ;Sort into Y co-ords, in order NEWPT=Lo, GCSIR=Hi, OLDCS=Med
+ LDXIM OLDCS-V
+ LDYIM GCSIR-V
+ JSR SORTY
+ JSR SORTA
+ LDXIM NEWPT-V ;Set paramters for hypotenuse ...
+ LDYIM HDELTA-V ;Find Deltas
+ JSR TRISA
+ LDA HDELTA+&01 ;Copy sign of DeltaX to determine direction
+ STA HDIREC
+ LDXIM HPARMS
+ JSR TRISB ;complete definition of hypotenuse parameters
+ LDYIM HSTART-V ;Copy NEWPT to PStart of hypotenuse
+ JSR EMAEZ
+;Swap Y co-ords 2 & 3, to give 1st side
+ JSR SWAPB ;Y co-ords now in order Lo, Med, Hi
+ CLC  ;Don't plot the last line
+ JSR TRSF ;Do the lower half of the triangle
+;Swap points to enable set up of 2nd side
+ JSR SWAPB ;Y co-ords now Lo, Hi, Med
+ LDXIM NEWPT-V ;swap Y co-ords 1 & 3 to give 2nd side
+ JSR SWAPC ;& now Med, Hi, Lo
+ SEC  ;Do plot the last line
+ JSR TRSF ;& plot the top half
+ LDXIM GCSTMP-V ;Restore original graphics cursor & new point
+ LDYIM NEWPT-V
+ JSR COPY8
+ JMP EMAEX ;& do things to the cursors
+
+;(SORTY exits with (X)<(Y))
+
+SORTA LDXIM NEWPT-V
+ LDYIM OLDCS-V
+SORTY LDAAX V+&02
+ CMPAY V+&02
+ LDAAX V+&03
+ SBCAY V+&03
+ BMI TRSRTS
+ JMP SWAPF
+
+CSRPOS
+ LDA CSX ;~~~ Read text cursor position ~~~
+ SEC
+ SBC TWLCOL
+ TAX
+ LDA CSY
+ SEC
+ SBC TWTROW
+ TAY
+TRSRTS RTS  ;No, then return
+
+;TRSF Initialises a parameter list for ULN
+;Sets up the "sides" (as opposed to the hypoteneuse) only. Skips if
+;the 2 Y values are equal, otherwise calls HPLOT & ULN the requisite
+;number of times
+;Assumes the points forming the side to be initialised are in
+;NEWPT & GCSIR
+
+TRSF PHP  ;Push carry - is set if last line is to be plotted
+ LDXIM NEWPT-V  ;Set up triangle parameters
+ LDYIM SDELTA-V ;Find deltas (sides only)
+ JSR TRISA
+ LDA SDELTA+&01 ;Find direction by sign of DeltaX
+ STA SDIREC
+ LDXIM SPARMS-V ;Find MOD Deltas, and initialise L
+ JSR TRISB
+ LDYIM SSTART-V ;Copy NEWPT to SSTART
+ JSR EMAEZ
+ SEC  ;How many Y values are there to be done ?
+ LDA NEWPT+&02
+ SBC GCSIY
+ STA TRINLN ;Result (2's comp.) to TRINLN
+ LDA NEWPT+&03
+ SBC GCSIY+&01
+ STA TRINLN+&01 ;(MSB)
+ ORA TRINLN ;Anything to do?
+ BEQ TRSFA
+TRSFB JSR HPLOT ;Plot the line
+ LDXIM SPARMS-V ;Move the side up
+ JSR ULN
+ LDXIM HPARMS-V ;Move the hypoteneuse up
+ JSR ULN
+ INC TRINLN ;Any more lines ?
+ BNE TRSFB ;Yes, then loop, otherwise
+ INC TRINLN+&01
+ BNE TRSFB
+
+TRSFA PLP  ;Plot the last line?
+ BCC TRSRTS ;No, if c=0
+
+;HPLOT Fast plot of horizontal line
+;Plots horizontal line in current colour from points defined
+;at SSTART & HSTART, or, if entered at HPLOTA, from
+;GWTROW+(X) to GWTROW+(Y).
+;Y co-ordinate taken from point at (X)
+
+HPLOT LDXIM SSTART-V ;Initialise point pointers
+ LDYIM HSTART-V
+HPLOTA STX ZTEMPC ;Store these point pointers
+ LDAAX V ;Is x co-ord. of (X)<(Y) ?
+ CMPAY V
+ LDAAX V+&01
+ SBCAY V+&01
+ BMI HPLOTB ;No, then swap (X) < = > (Y)
+ TYA
+ LDY ZTEMPC
+ TAX
+ STX ZTEMPC
+HPLOTB STY ZTEMPC +&01
+
+;ZTEMPC & X now contain the offset from V to the L.H. point
+;& ZTEMPC +01 & Y the offset from V to the R.H. point
+
+ LDAAY V ;Push R.H. x co-ordinate
+ PHA
+ LDAAY V+&01
+ PHA
+ LDX ZTEMPC +&01 ;Window the R.H. point
+ JSR WIND
+ BEQ HPLOTC ;Within window?, then plot to this point
+ CMPIM &02 ;Only other allowed value of this window is 2
+ BNE HPLOTX ;Exit if this isn't =2
+ LDXIM GWRCOL-V ;It was 2?, then copy R.H. margin to x co-ord of RH point
+ LDY ZTEMPC+&01
+ JSR COPY2
+ LDX ZTEMPC+&01
+HPLOTC JSR GADDR ;Address (modified) RH end point
+ LDX ZTEMPC ;Window L.H. end point
+ JSR WIND
+ LSRA  ;Only allowed values of this window are 0 & 1
+ BNE HPLOTX ;Neither of those?, then exit
+ BCC HPLOTD ;Window was zero, then don't modify L.H. end point
+ LDXIM GWLCOL-V ;L.H. endpoint was to the left of L. margin, so plot to latter
+HPLOTD LDY ZTEMPC +&01 ;Point to R.H. end point
+ SEC  ;to determine no. of points needed
+ LDAAY V ;Generate no. of points to be plotted
+ SBCAX V
+ STA ZTEMPB
+ LDAAY V+&01
+ SBCAX V+&01
+ STA ZTEMPB +&01
+ LDAIM &00 ;Generate the mask for the R.H. fractional byte
+HPLOTG ASLA
+ ORA ZMASK ;Generate R.H fractional mask
+ LDY ZTEMPB
+ BNE HPLOTE
+ DEC ZTEMPB +&01 ;No more points to be plotted ?
+ BPL HPLOTE
+ STA ZMASK ;No?, then plot this byte only
+ JSR PLOT
+HPLOTX LDX ZTEMPC+&01 ;Restore R.H. end point's x co-ordinate
+ PLA
+ STAAX V+&01
+ PLA
+ STAAX V
+ RTS
+HPLOTE DEC ZTEMPB
+ TAX  ;Continue with generation of R.H. fractional byte mask
+ BPL HPLOTG ;until b7 of this mask is set, whence is the mask complete
+ STA ZMASK
+ JSR PLOT ;Plot R.H. fractional byte
+ LDX ZTEMPB ;LSB of no. points to be plotted, excl RH fractional byte
+ INX  ;Increment this, for no. points is inclusive
+ BNE HPLOTL
+ INC ZTEMPB +&01
+HPLOTL TXA
+ PHA  ;Needed for the determination of the LH fractional byte
+ LSR ZTEMPB +&01 ;Divide no. points by no.pixels to give no. bytes
+ RORA
+ LDY NPIX
+ CPYIM &03
+ BEQ HPLOTP
+ BCC HPLOTQ
+ LSR ZTEMPB +&01 ;y>3, i.e 8 pixels per byte
+ RORA
+HPLOTP LSR ZTEMPB +&01 ;y=3, i.e. 4 pixels per byte
+ LSRA
+HPLOTQ LDY YLINE ;Prepare ye the way of the loop
+ TAX  ;Contains the nuber of complete bytes to be filled in
+ BEQ HPLOTF ;None?, then skip to plotting of L.H. fractional byte
+
+HPLOTI TYA  ;MAIN FULL BYTE LOOP
+ SEC  ;Move Y back 8 bytes
+ SBCIM &08
+ TAY
+ BCS HPLOTH ;Carry generated?
+ DEC ZMEMG +&01 ;Yes?, then decrement MSB of IY vector
+HPLOTH JSR PLOTFF ;Plot the bugger !
+ DEX  ;Any more ?
+ BNE HPLOTI ;Yes, then loop again
+
+HPLOTF PLA  ;Pull the LSB of the number of points to plotted
+ AND NPIX ;No. of points in L.H. fractional byte
+ BEQ HPLOTX ;Leave if nothing to do
+ TAX  ;Generate the mask for the LH fractional byte
+ LDAIM &00
+HPLOTJ ASLA
+ ORA MASKR
+ DEX
+ BNE HPLOTJ
+ STA ZMASK
+ TYA
+ SEC  ;Move Y back 8 bytes again
+ SBCIM &08
+ TAY
+ BCS HPLOTK ;Carry generated
+ DEC ZMEMG +&01 ;Yes?, then decrement MSB of IY vector
+HPLOTK JSR PLOTS ;Plot the L.H. fractional byte
+ JMP HPLOTX
+
+;ULN Increments the current graphics line which is drawing the triangle
+;It varies the X points according to the values of the MOD deltas, and
+;the direction byte.
+;As input, it requires in X the offset of the parameter list from V.
+;The parameter list is assumed to be in the following order :
+;Bytes 0-1 "L", the variable used in determining the steps left/right
+;Bytes 2-3 MOD Delta X
+;Bytes 4-5 MOD Delta Y
+;Bytes 6-9 Point from which the line is to be drawn (XL,XH,YL,YH)
+;Byte A    Direction - +ve if x increasing as Y does, else -ve
+
+ULN INCAX V+&08 ;Increment Y value of point to be drawn from/to
+ BNE ULNA
+ INCAX V+&09
+ULNA SEC  ;L := L - MOD(DeltaX)
+ LDAAX V
+ SBCAX V+&02
+ STAAX V
+ LDAAX V+&01
+ SBCAX V+&03
+ STAAX V+&01
+ BPL ULNB ;+ve?, then skip the move X part following
+ULNF LDAAX V+&0A ;Move X, which direction ?
+ BMI ULNC ;Skip if move left
+ INCAX V+&06 ;Move right, therefore increment the X value
+ BNE ULND
+ INCAX V+&07
+ JMP ULND
+ULNC LDAAX V+&06 ;Move left, therefore decrement X value
+ BNE ULNE
+ DECAX V+&07
+ULNE DECAX V+&06
+ULND CLC  ;L := L + MOD DeltaY
+ LDAAX V
+ ADCAX V+&04
+ STAAX V
+ LDAAX V+&01
+ ADCAX V+&05
+ STAAX V+&01
+ BMI ULNF ;Move left/right again ? TRAP HORIZONTAL LINES BEFORE !!
+ULNB RTS
+ LNK MOS11

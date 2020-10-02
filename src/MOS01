@@ -1,0 +1,697 @@
+
+ TTL VDU File - MOS01
+ OPT MOS01
+
+ < &0001
+ > &0002
+
+;Last revision 02/06/82
+
+;02/06/82  Remove HWMOFS
+;26/05/82  Concatenate TBZGOE & FCOLTB
+;05/05/82  Reverse bytes of multiplication tables TXTTB & HRGTB
+;          Delete LRGTB
+;02/05/82  Concatenate TBZGxx tables
+;          Change order of D1 & D2 jump tables & EWTBA
+;21/04/82  Colour mode #5 (which gives no change) included in TBZGxx.
+;          External entry points provided
+;15/04/82  NPCOL declared
+;24/03/82  Delete DFSFPG as these are calculated at run time
+;22/01/82  Delete PDIVTB, it wasn't referenced
+;          Delete READVP entry point & asssociated jump table
+;          Change VDUVEC to VDUVEC, prefix all MOS names with m
+;          TRMCH fixed as $0D
+;          Soft font default now the exploded default
+;07/01/82  Change MODEL & VDUVEC
+;09/11/81  Change to one entry point for read VDU parameters
+;28/10/81  ETB msb changed from $49 to $59
+;          Chars $C0-$DF taken from $10 (was $0C)
+;          Chars $E0-$FF taken from $0C (was $10)
+
+; conditional assembly flags
+STARTP * &FF ;assume end points plotted twice
+PAGEFX * &00 ;Fix bug in page mode (I hope)
+; ($00 => TRUE,  $FF => FALSE)
+
+;ZERO PAGE VARIABLES
+
+ ^ &00D0
+STATS # &01
+
+;
+ZMASK # &01
+ZORA # &01 ;Next four must be in this order
+ZEOR # &01
+ZGORA # &01
+ZGEOR # &01
+;
+ZMEMG # &02
+ZMEMT # &02 ;Immediately before ZTEMP (SSCRS)
+ZTEMP # &02
+ZTEMPB # &02
+ZTEMPC # &02
+ZTBL # &02
+
+;EQUATE TABLE
+
+ACKASC * &06 ;Ascii value of acknowledge
+INBYTE * &FE ;Dummy colour to indicate invert (illegal colour)
+
+TTXBCL * &20 ;Byte to clear screen with in TTX
+TRMCH * &0D ;Byte to terminate edit mode
+SFPAGE * &0C ;Page of first definable set of characters
+INVSXT * &3F ;Used to invert logical colour of mode 2 without touching flash
+NPCOL * &0F ;number of physical colours - 1
+
+;MACHINE CONSTANTS
+
+CRTCA * &FE00 ;6845 address reg.
+CRTCD * &FE01 ;6845 data register
+
+;ENTRY POINTS
+
+CODE * &C300
+CODORG * /CODE
+
+ ORG CODE
+
+ JMP RESET ;Reset VDU to mode (A)
+; JMP GADDR
+; JMP WIND
+; JMP EIGABS
+; JMP IEG
+; JMP PLOT
+; JMP HPLOT
+; JMP SETZG
+; JMP RPXLD
+
+; MOS messages to be written by WRSTR
+MSG
+MSGBBC  ;BBC Computer
+ = MCR,"BBC Computer ",0
+ 
+MSG16K  ;16K
+ = "16K",BEL,0
+ 
+MSG32K  ;32K
+ = "32K",BEL,0
+ 
+MSG2CR
+ = &08
+ = &0D
+ = &0D ;uses the next $00
+
+;EXPANDED BIT PATTERN TABLES - must be contiguous
+
+;FOUR COLOUR MODE
+
+BPFTB = &00
+ = &11
+ = &22
+ = &33
+ = &44
+ = &55
+ = &66
+ = &77
+ = &88
+ = &99
+ = &AA
+ = &BB
+ = &CC
+ = &DD
+ = &EE
+ = &FF
+
+;SIXTEEN COLOUR MODE
+
+BPSTB = &00
+ = &55
+ = &AA
+ = &FF
+
+
+;JUMP TABLES Lower byte
+
+JTBLO = ACK ;Points to an RTS
+ = SOH
+ = STX
+ = ETX
+ = EOT
+ = ENQ
+ = ACK
+ = BELL
+ = BS
+ = HT
+ = LF
+ = VT
+ = FF
+ = CR
+ = SO
+ = SI
+ = DLE
+ = DCA
+ = DCB
+ = DCC
+ = DCD
+ = NAK
+ = SYN
+ = ETB
+ = CAN
+ = EM
+ = SUB
+ = ACK ;Points to an RTS
+ = FS
+ = GS
+ = RS
+ = US
+ = DEL
+
+;Higher byte unless bytes to be queued, in which case, lower nibble
+;gives number of bytes to be queued, upper offset of higher byte
+;of routine address from code origin as specified by CODORG. Note
+;that this must be <8, i.e. biy 7 of whole byte is clear.
+
+JTBHI = /(ACK ) ;Points to an RTS
+ = SOH:SHR:&8-CODORG:SHL:&4+&10-&1 ;Queue 1 byte (SOH)
+ = /(STX )
+ = /(ETX )
+ = /(EOT )
+ = /(ENQ )
+ = /(ACK )
+ = /(BELL )
+ = /(BS )
+ = /(HT )
+ = /(LF )
+ = /(VT )
+ = /(FF )
+ = /(CR )
+ = /(SO )
+ = /(SI )
+ = /(DLE )
+ = DCA:SHR:&8-CODORG:SHL:&4+&10-&1 ;Queue 1 byte (DCA)
+ = DCB:SHR:&8-CODORG:SHL:&4+&10-&2 ;Queue 2 bytes (DCB)
+ = DCC:SHR:&8-CODORG:SHL:&4+&10-&5 ;Queue 5 bytes (DCC)
+ = /(DCD )
+ = /(NAK )
+ = SYN:SHR:&8-CODORG:SHL:&4+&10-&1 ;Queue 1 byte (SYN)
+ = ETB:SHR:&8-CODORG:SHL:&4+&10-&9 ;Queue 9 bytes (ETB)
+ = CAN:SHR:&8-CODORG:SHL:&4+&10-&8 ;Queue 8 bytes (CAN)
+ = EM:SHR:&8-CODORG:SHL:&4+&10-&5 ;Queue 5 bytes (EM)
+ = /(SUB )
+ = /(ACK ) ;Points to an RTS
+ = FS:SHR:&8-CODORG:SHL:&4+&10-&4 ;Queue 4 bytes (FS)
+ = GS:SHR:&8-CODORG:SHL:&4+&10-&4 ;Queue 4 bytes (GS)
+ = /(RS )
+ = US:SHR:&8-CODORG:SHL:&4+&10-&2 ;Queue 2 bytes (US)
+ = /(DEL )
+
+;ROW OFFSETS FOR H.R.G.
+
+HRGTB = &00
+ = &00
+ = &02
+ = &80
+ = &05
+ = &00
+ = &07
+ = &80
+ = &0A
+ = &00
+ = &0C
+ = &80
+ = &0F
+ = &00
+ = &11
+ = &80
+ = &14
+ = &00
+ = &16
+ = &80
+ = &19
+ = &00
+ = &1B
+ = &80
+ = &1E
+ = &00
+ = &20
+ = &80
+ = &23
+ = &00
+ = &25
+ = &80
+ = &28
+ = &00
+ = &2A
+ = &80
+ = &2D
+ = &00
+ = &2F
+ = &80
+ = &32
+ = &00
+ = &34
+ = &80
+ = &37
+ = &00
+ = &39
+ = &80
+ = &3C
+ = &00
+ = &3E
+ = &80
+ = &41
+ = &00
+ = &43
+ = &80
+ = &46
+ = &00
+ = &48
+ = &80
+ = &4B
+ = &00
+ = &4D
+ = &80
+
+;ROW OFFSET TABLE FOR TELETEXT
+
+TXTTB = &00
+ = &00
+ = &00
+ = &28
+ = &00
+ = &50
+ = &00
+ = &78
+ = &00
+ = &A0
+ = &00
+ = &C8
+ = &00
+ = &F0
+ = &01
+ = &18
+ = &01
+ = &40
+ = &01
+ = &68
+ = &01
+ = &90
+ = &01
+ = &B8
+ = &01
+ = &E0
+ = &02
+ = &08
+ = &02
+ = &30
+ = &02
+ = &58
+ = &02
+ = &80
+ = &02
+ = &A8
+ = &02
+ = &D0
+ = &02
+ = &F8
+ = &03
+ = &20
+ = &03
+ = &48
+ = &03
+ = &70
+ = &03
+ = &98
+ = &03
+ = &C0
+
+;NO. ROWS IN EACH MEMORY MODE
+
+PROWS = &1F
+ = &1F
+ = &1F
+ = &18
+ = &1F
+ = &1F
+ = &18
+ = &18
+
+;NO. COLS. IN EACH MEMORY MODE
+
+PCOLS = &4F
+ = &27
+ = &13
+ = &4F
+ = &27
+ = &13
+ = &27
+ = &27
+
+;BYTES TO BE LOADED INTO mMODREG FOR DIFFERENT MODES
+
+INDMOD = &9C
+ = &D8
+ = &F4
+ = &9C
+ = &88
+ = &C4
+ = &88
+ = &4B
+
+;BYTES PER CHARACTER
+;IN EACH MODE
+
+BYTCHT = &08
+ = &10
+ = &20
+ = &08
+ = &08
+ = &10
+ = &08
+ = &01
+
+;MASK TABLES - must be contiguous
+
+;For each mode, the masks of each pixel, MS first
+;Note that it is now assumed that adjacent masks may be generated
+;by either ASL or LSR.
+
+;SIXTEEN colour mode
+
+MASKTB = &AA
+ = &55
+
+;FOUR colour mode
+ = &88
+ = &44
+ = &22
+ = &11
+
+;TWO colour mode
+
+BITTBL = &80
+ = &40
+ = &20
+ = &10
+ = &08
+ = &04
+
+ = &02 ;**** NEXT 3 BYTES USED BY CFS ****
+;Uses $01 of next table
+
+;COLOURS AVAILABLE FOR MODES
+
+COLMOD = &01
+ = &03
+ = &0F
+
+ = &01 ;**** NEXT 3 BYTES USED BY CFS ****
+ = &01
+ = &03
+ = &01
+;TTX - must be 0 - uses 1st byte of next table
+
+;Bytes for forming ZGORA & ZGEOR
+;Tables have been run into each other to save bytes.
+;They should be as follows
+
+;TBZGOO  OR the  OR :- $FF,$00,$00,$FF,$FF,$FF
+;TBZGEO EOR the  OR :- $00,$00,$FF,$FF,$FF,$FF
+;TBZGOE  OR the EOR :- $00,$FF,$00,$00,$FF,$FF
+;TBZGEE EOR the EOR :- $FF,$FF,$FF,$00,$00,$FF
+
+;These are for the colour modes 0 to 5, being
+;0=Store,1=OR,2=AND,3=EOR,4=Invert,5=No change
+
+TBZGOE = &00
+TBZGOO = &FF
+TBZGEO = &00
+ = &00
+ = &FF
+TBZGEE = &FF
+ = &FF
+ = &FF
+ = &00 ;Uses next $00, $FF
+
+;~~~ COLOUR TABLES ~~~
+
+;FULL COLOUR TABLES
+;Tables of 'full colours',
+;i.e. of bytes with all bits
+;set to 1 colour, in ascending
+;colour order
+
+FCOLTB = &00 ;Two colour table
+ = &FF
+
+;Four colour table
+
+ = &00
+ = &0F
+ = &F0
+ = &FF
+
+;Sixteen colour table
+
+ = &00
+ = &03
+ = &0C
+ = &0F
+ = &30
+ = &33
+ = &3C
+ = &3F ;INVSXT This byte used to invert graphics pixels
+ = &C0
+ = &C3
+ = &CC
+ = &CF
+ = &F0
+ = &F3
+ = &FC
+ = &FF
+
+;TABLE FOR NPIX
+
+;No. pixles per byte in each graphics mode
+;(0 if not graphics)
+
+NPIXTB = &07
+ = &03
+ = &01
+ = &00 ;(Non graphics)
+ = &07
+ = &03
+;Non-graphics modes - use next 2 $00s
+
+;MEMORY MAP TYPES
+;Index from MODE (0..7), to
+;the following 5 element tables
+
+MODETB
+ = &00
+SOUNDV  ;channel dependent period offset
+SCHOFF * SOUNDV -&04
+
+ = &00
+ = &00
+ = &01
+ = &02
+ = &02
+ = &03
+;Uses $04 of next table
+
+
+;EXIT WINDOW OFFSET TABLE
+
+EWTBA = &04
+ = &00
+ = &06
+ = &02
+
+
+;C0 control table
+;C1 control table
+
+CONE = &0D
+ = &05
+ = &0D
+ = &05 ;Uses next $04
+CZERO = &04
+ = &04
+ = &0C
+ = &0C
+ = &04
+
+;TABLES OF JUMP VECTORS
+;FOR CLEAR SCREEN
+
+CLSCTA = CLASCA ;(LSB)
+ = CLASCB 
+ = CLASCC
+ = CLASCD
+ = CLASCE
+
+;CLSCTB = CLASCA / ;(MSB)
+; = CLASCB /
+; = CLASCC /
+; = CLASCD /
+; = CLASCE /
+
+;NO. BYTES PER SCREEN (MSB)
+
+BYTSTA = &50
+ = &40
+ = &28
+ = &20
+ = &04
+
+;MSB OF SCREEN START
+
+STSCTB = &30
+ = &40
+ = &58
+ = &60
+ = &7C
+
+;BYTE WIDTH TYPES
+;Index from MEMODE (0..4), to
+;the following 3 element tables
+
+;Now replaced with LSRA
+
+;LSB OF NO. BYTES PER ROW
+
+BYTRTA = &28
+ = &40
+ = &80
+
+;LSB OF SCREEN OFFSET TABLES
+
+TBZTBA = TXTTB
+ = HRGTB
+ = HRGTB
+
+
+;CRTC TABLES
+
+;INDEX FOR CRTC TABLES
+
+CRTCX = &0B
+ = &17
+ = &23
+ = &2F
+ = &3B
+
+;CRTC TABLE FOR MODES 0-2
+
+CRTCTB = &7F
+ = &50
+ = &62
+ = &28 ;VS=2
+ = &26
+ = &00
+ = &20
+ = &22 ;was $22 & then it was $23 
+ = &01
+ = &07
+ = &67
+ = &08
+
+;CRTC TABLE FOR MODE 3
+
+ = &7F
+ = &50
+ = &62
+ = &28 ;VS=2
+ = &1E
+ = &02
+ = &19
+ = &1B ;was $1B & then it was $1C
+ = &01
+ = &09
+ = &67
+ = &09
+
+;CRTC TABLE FOR MODES 4-5
+
+ = &3F
+ = &28
+ = &31
+ = &24 ;VS=2
+ = &26
+ = &00
+ = &20
+ = &22 ;was $22 & then it was $23
+ = &01
+ = &07
+ = &67
+ = &08
+
+;CRTC TABLE FOR MODE 6
+
+ = &3F
+ = &28
+ = &31
+ = &24 ;VS=2
+ = &1E
+ = &02
+ = &19
+ = &1B ;was $1B & then it was $1C
+ = &01
+ = &09
+ = &67
+ = &09
+
+;CRTC TABLE FOR MODE 7
+
+ = &3F
+ = &28
+ = &33
+ = &24 ;VS=2
+ = &1E
+ = &02
+ = &19
+ = &1B ;was $1B & then it was $1C
+ = &93
+ = &12
+ = &72
+ = &13
+
+;JUMP TABLES FOR PLOTTING ROUTINES
+
+D1JTB = EA
+ = /(EA )
+ = NA
+ = /(NA )
+
+D2JTBL = EB
+ = WB
+ = NB
+ = SB
+
+D2JTBH = /(EB )
+ = /(WB )
+ = /(NB )
+ = /(SB )
+
+
+;TELETEXT CONVERSION TABLE
+
+TTXTB = &23
+ = &5F
+ = &60
+ = &23
+
+
+; font table
+
+FFSZOT  ;Four,Five,Six,Zero,One,Two
+ = &04
+ = &05
+ = &06
+ = &00
+ = &01
+ = &02
+
+
+ LNK MOS02

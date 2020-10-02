@@ -1,0 +1,339 @@
+
+  TTL VDU File - MOS04
+ OPT MOS04
+;Last revision 02/06/82
+
+;02/06/82  Implode/Explode font change, RESET (fonts) changed
+;26/05/82  Replace table TBZTBX with LSRA
+;19/05/82  Compress PAGEE code
+;18/05/82  Conditional coding to remove bug from PAGE
+;01/05/82  Considerable recoding for new variable order & forward queueing
+;19/04/82  BYTE squashing
+;24/03/82  Add soft font implosion & explosion
+;          Change refs. to BEGSCN+1 to BEGSCN
+;08/02/82  Remove initialisation of TRMCH
+;07/01/82  Remove initialisation of VDUVEC
+;16/11  Bug fix - page mode only at bottom line of window
+;14/11  Initialisation of DOTS removed
+;28/10  Initialisation of FNTFLG
+
+;Get address of line below
+
+ADDROW PHA
+ TXA
+ CLC
+ ADC BYTROW
+ TAX
+ PLA
+ ADC BYTROW +&01
+ RTS
+
+;Is page mode on ?
+
+;CTRL and SHIFT keys pressed (c=1)
+
+PAGEF JSR PAGED ;reset LINES, N.B. does not corrupt c
+; If c=1 => set both LEDs
+PAGE JSR MOSTST ;pause if CTRL and SHIFT keys pressed
+ BCC PAGEE ;[CTRL not pressed]
+ BMI PAGEF ;[CTRL and SHIFT keys pressed ,c=1]
+; CTRL without SHIFT
+
+ [ PAGEFX =0;TRUE if bug in page to be fixed
+PAGEE LDA STATS
+ EORIM &04 ;invert page mode bit
+ ANDIM &46 ;Exit if C.E. or scroll disabled, or not in page mode
+ BNE PAGEX
+ |
+PAGEE LDAIM &04 ;handle page mode
+ BIT STATS
+ BVS PAGEX ;(Scrolling disabled, so skip)
+ BEQ PAGEA ;No, then return
+ ]
+
+ LDA LINES ;Is a page printed yet ?
+ BMI PAGEA ;If -ve, then reset (more down scrolls than up)
+; ensure on bottom line of text window
+ LDA CSY
+ CMP TWBROW
+ BCC PAGEA ;[not on bottom line of text window]
+; deal with overlap
+ LSRA
+ LSRA
+ SEC
+ ADC LINES
+ ADC TWTROW ;(c=0)
+ CMP TWBROW
+ BCC PAGEA ;No, then continue
+ CLC ;do not set LEDs on first scroll test
+;wait for shift key
+PAGEC JSR MOSTST
+ SEC ;test LEDs on subsequent scroll tests
+ BPL PAGEC
+PAGED LDAIM &FF ;Reinitialise LINES
+ STA LINES
+PAGEA INC LINES
+PAGEX RTS
+
+;INTIALISATION ROUTINE
+;Initial mode in (A)
+
+RESET PHA  ;Push mode
+ LDXIM VEND-V ;Clear all variables
+ LDAIM &00
+ STA STATS
+RESETA STAAX V-&01
+ DEX
+ BNE RESETA
+; X=0 **** AND EQ status (used by FONT) ****
+ JSR FONT ;Ensure font imploded
+ PLA  ;Pull the mode back again
+ LDXIM &7F ;Initialise CHCSR to character for DEL
+ STX CHCSR ;and fall through to ...
+
+;MODE CHANGE
+
+CHMODE BIT MODEL ;adjust according to model
+ BMI CHMOD1 ;[model B]
+ ORAIM &04 ;model A
+CHMOD1 ANDIM &07
+ TAX
+ STX MODE ;Initialise MODE
+ LDAAX COLMOD ;Get no. colours
+ STA NCOLOR ;=0 if TTX
+ LDAAX BYTCHT ;No. bytes / char.
+ STA BYTCH
+ LDAAX NPIXTB ;no. pixles per byte -1, =0 if non-graphics mode
+ STA NPIX
+ BNE CHMODB
+ LDAIM &07 ;Initialise left and right masks for read character
+CHMODB ASLA  ;Define left and right masks. PRESERVE c !!!
+ TAY
+ LDAAY MASKTB -&01 ;Offset to right mask
+ STA MASKR
+CHMODC ASLA
+ BPL CHMODC ;Generate left most mask
+ STA MASKL ;c=0 - preserve until byte width type generated
+ LDYAX MODETB ;Memory map type
+ STY MEMODE
+ LDAAY CZERO ;Initialise C0
+ JSR CREG ;must preserve c=0
+ LDAAY CONE
+ JSR CREG
+ LDAAY BYTSTA ;Total bytes dsp.'ed
+ STA BYTSCN
+ LDAAY STSCTB ;Addr. 1st to disp'ed
+ STA BEGSCN
+ TYA ;Get byte width type
+ ADCIM &02 ;(c=0) Map (0,1,2,3,4) to (2,2,1,1,0)
+ EORIM &07
+ LSRA
+ TAX
+ LDAAX TBZTBA ;LSB of table addr.
+ STA ZTBL
+ LDAIM /(HRGTB ) ;MSB of same (always the same)
+ STA ZTBL +&01
+ LDAAX BYTRTA ;Byte width of row
+ STA BYTROW
+ STX BYTROW +&01
+ LDAIM &43 ;Preserve b6, b1 & b0 of STATS only
+ JSR STTAND ;Clear all others
+ LDX MODE ;Indirect mode to mMODREG
+ LDAAX INDMOD ;from this table
+ JSR MVPRC0 ;as close as possible to the reprogramming of the 6845
+
+;PROGRAMME THE 6845
+
+ PHP
+ SEI
+ LDXAY CRTCX ;Get the table to Xmt
+ LDYIM &0B ;No. bytes to feed it
+CRTCLP LDAAX CRTCTB ;Load byte to
+ JSR CRTCP ;Programme the 6845 and save value of cursor start
+ DEX
+ DEY
+ BPL CRTCLP
+ PLP
+
+ JSR DCD ;Default log.phys. cols.
+ JSR SUB ;Clear any windowing
+
+;fall through to .....
+
+CLATXT LDXIM &00 ;TOPSCN:=BEGSCN
+ LDA BEGSCN ;Load must be in this to ensure n=0, tested in CSDSPA
+ STX TOPSCN
+ STA TOPSCN +&01
+ JSR CSDSPA ;Home cursor
+ LDYIM &0C ;Take divided address
+ JSR AXCRTC
+ LDA BTCOLF
+ LDX MEMODE ;Get mem.map type
+ LDYAX CLSCTA ;Set up jump vector
+ STY JVEC
+ LDYIM /(CLASCA ) ;Used to be LDYAX CLSCTB
+ STY JVEC +&01
+ LDXIM &00
+ STX LINES ;Initialise the number of lines scrolled
+ STX CSX
+ STX CSY
+ JMI JVEC
+
+RCHDEF
+ JSR CHADDR ;Read character definition
+ LDYIM &00 ;Address character (start of defn. now in ZTEMPC)
+PRABA LDAIY ZTEMPC ;Copy definition
+ INY
+ STAIY WARGS
+ CPYIM &08
+ BNE PRABA
+ RTS
+
+CLASCA STAAX &3000 ;Modes 1-3 (20K)
+ STAAX &3100
+ STAAX &3200
+ STAAX &3300
+ STAAX &3400
+ STAAX &3500
+ STAAX &3600
+ STAAX &3700
+ STAAX &3800
+ STAAX &3900
+ STAAX &3A00
+ STAAX &3B00
+ STAAX &3C00
+ STAAX &3D00
+ STAAX &3E00
+ STAAX &3F00
+CLASCB STAAX &4000 ;Mode 3 (16k)
+ STAAX &4100
+ STAAX &4200
+ STAAX &4300
+ STAAX &4400
+ STAAX &4500
+ STAAX &4600
+ STAAX &4700
+ STAAX &4800
+ STAAX &4900
+ STAAX &4A00
+ STAAX &4B00
+ STAAX &4C00
+ STAAX &4D00
+ STAAX &4E00
+ STAAX &4F00
+ STAAX &5000
+ STAAX &5100
+ STAAX &5200
+ STAAX &5300
+ STAAX &5400
+ STAAX &5500
+ STAAX &5600
+ STAAX &5700
+CLASCC STAAX &5800 ;Modes 4,5 (10K)
+ STAAX &5900
+ STAAX &5A00
+ STAAX &5B00
+ STAAX &5C00
+ STAAX &5D00
+ STAAX &5E00
+ STAAX &5F00
+CLASCD STAAX &6000 ;Mode 6 (8k)
+ STAAX &6100
+ STAAX &6200
+ STAAX &6300
+ STAAX &6400
+ STAAX &6500
+ STAAX &6600
+ STAAX &6700
+ STAAX &6800
+ STAAX &6900
+ STAAX &6A00
+ STAAX &6B00
+ STAAX &6C00
+ STAAX &6D00
+ STAAX &6E00
+ STAAX &6F00
+ STAAX &7000
+ STAAX &7100
+ STAAX &7200
+ STAAX &7300
+ STAAX &7400
+ STAAX &7500
+ STAAX &7600
+ STAAX &7700
+ STAAX &7800
+ STAAX &7900
+ STAAX &7A00
+ STAAX &7B00
+CLASCE STAAX &7C00 ;Mode 7 (1k = TTX)
+ STAAX &7D00
+ STAAX &7E00
+ STAAX &7F00
+ INX
+ BEQ ENSCRX
+RUNNER JMI JVEC
+
+;Get the next line up,
+;test if wraparound
+;This is here as padding
+
+SUBROW PHA
+ TXA
+ SEC
+ SBC BYTROW
+ TAX
+ PLA
+ SBC BYTROW +&01
+ CMP BEGSCN
+FONT0
+ RTS
+
+FONT
+;
+; implode font
+;
+ LDAIM &0F ;Fonts 1,2,3 hard (set 0). MSb not used
+ STA FNTFLG
+;
+ LDAIM SFPAGE
+ LDYIM &06 ;Set Fonts 1 to 7 to page SFPAGE
+FIMPA STAAY PGSFNT
+ DEY
+ BPL FIMPA
+;
+; test operation type
+;
+; force X in range
+ CPXIM &07
+ BCC FONTOK ;[X <= 6]
+ LDXIM &06
+FONTOK  ;0 <= X <= 6
+ STX FONTSW ;record font state
+;
+ LDA IHWM
+;
+; explode fonts that lie within extension pages
+;
+ LDXIM &00
+FEXPA
+ CPX FONTSW
+ BCS FEXPA0
+; C=0
+ LDYAX FFSZOT
+ STAAY PGSFNT
+; C=0
+ ADCIM &01
+ INX
+ BNE FEXPA ;[ALWAYS jump]
+FEXPA0
+;
+;X = FONTSW
+ STA HWM
+;
+ TAY
+ BEQ FONT0
+ LDXIM SVHWMC
+ JMP SVOP
+
+
+ LNK MOS05

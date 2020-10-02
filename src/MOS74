@@ -1,0 +1,887 @@
+
+;File - MOS74
+
+ TTL C.F.S Main Routines - OPT
+ OPT &01
+
+;Entered with two args in X & Y decoded from
+;command line by MOS.
+
+CFSOPT TXA
+ BEQ DEF ;X=0/Y=0 => default
+ CPXIM &03
+ BEQ SETGAP
+ CPYIM &03
+ BCS OPTERR
+ DEX
+ BEQ MSGS
+ DEX
+ BEQ ERRS
+
+OPTERR JMP MBDCMD
+
+MSGS LDAIM MSGMSK
+ INY
+ INY
+ INY
+ BNE XSETFLG ;[ALWAYS jump]
+
+ERRS LDAIM ERRMSK ;Mask out error and default bits
+XSETFLG INY
+ AND OPTS
+SETFL1 ORAAY OPTTAB
+ STA OPTS
+ RTS
+
+SETGAP TYA
+ BMI SETGP2 ; >127 => default
+ BNE SETGP1 ; 0 < gap < 128 => OK
+SETGP2 LDAIM DEFGAP
+SETGP1 STA SEQGAP
+ RTS
+
+DEF TAY  ;Must be zero from OPT
+ BEQ SETFL1
+
+OPTTAB = DEFLT
+ = IGBIT
+ = RETBIT
+ = ABTBIT
+ = &00 ;Messages off
+ = MSGS1 ;Short messages
+ = MSGS2 ;Long messages
+
+ TTL Main Routines - Interrupt routine
+ OPT &01
+
+IRUPT
+
+ DEC IFLAG
+ LDA SROMSW ;Is SFS active ?
+ BEQ NOTSPK ;Nope
+
+ JSR RDSPCH ;Yes, get next byte from ROM
+ TAY
+ CLC  ;Clear carry => no DCD
+ BCC DOIRPT ;Do as per cassette irupt
+
+NOTSPK LDA STATUS
+ PHA
+ ANDIM TXBIT
+ BEQ ITXON ;No TX interrupt
+ LDY TXFLAG
+ BEQ ITXON ;0 => receiving
+
+;Here, transmiting byte ....
+
+ PLA  ;Restore stack
+ LDA IBUF
+ STA PORT
+ RTS
+
+
+ITXON
+
+;If receiving byte, check IFLAG to see
+;where to put it.
+
+ LDY PORT ;Cancel interrupt
+ PLA  ;Pull status
+ LSRA
+ LSRA
+ LSRA  ;C = 1 => DCD; C = 0 => no DCD
+DOIRPT LDX ITYPE
+ BEQ IEX ;0 => no task pending
+
+
+ DEX
+ BNE FNDHDR ;X <> 1 => not DCD task
+ BCC IEX ;=> DCD Not yet found
+ LDYIM &02
+ BNE NEWINT ;Go on to look find hdr.
+
+FNDHDR DEX
+ BNE RDCHAR ;X <> 2 => not header task
+ BCS IEX ;Ignore DCD if present
+ TYA  ;Get stuff from port
+ JSR SETJOB ;Set CHKSUM etc.
+ LDYIM &03 ;New task
+
+ [ GLYN=0
+ ORAIM &02 ;The production test MOS must accept $28
+; as a header start char. since the public MOS 0.1
+; can produce blocks which start with this char.
+ ]
+
+ CMPIM "*"
+ BEQ NEWINT ;Set read chars
+ JSR RXINIT ;Reset ULA (should be BLIP)
+ LDYIM &01
+ BNE NEWINT ;Otherwise, wait for DCD
+
+RDCHAR DEX
+ BNE RDBLK ;X <> 3 => not RDCHAR task
+ BCS GOTDCD ;DCD found, not char
+ STY IBUF ;Store char read
+ BEQ IEX
+GOTDCD LDAIM &80
+ STA IFLAG ;Indicate DCD
+ BNE IEX
+
+RDBLK DEX  ;X <> 4=> not RDBLK
+ BNE SUMIN
+ BCS IFIN ;If DCD, finish immediately
+ TYA
+ JSR ADDCRC
+ LDY TEMP ;(pointer)
+ INC TEMP
+ BIT IBUF
+ BMI RDBLKA ;=> just verify, don't store
+
+ [ TUBESW=0
+ JSR TUBCHK ;Check tube present and top bytes of address
+ BEQ RDBLKB ;No need to tube. (NOTE TUBCHK DOES TAX to preserve A)
+
+ STX TREG3 ;Otherwise, push to tube R3
+ BNE RDBLKA ;And continue
+
+RDBLKB TXA
+ STAIY BKADDR ;Store in IO proc.
+ |
+ STAIY BKADDR ;If no tube, just store
+ ]
+
+RDBLKA INY
+ CPY INFO +BKSZEL  ;** 1 BYTE SIZE ONLY **
+ BNE IEX ;Keep going
+
+;Have here finished reading data, so
+;read two more bytes of CRC without storing
+
+ LDAIM &01 ;Set counter
+ STA TEMP
+ LDYIM &05
+ BNE NEWINT
+
+
+SUMIN
+
+;Here, assumed X = 5
+
+ TYA
+ JSR ADDCRC
+ DEC TEMP
+ BPL IEX ;One more to go
+
+;If here, finished, so mark BG job finished
+
+IFIN JSR CRESET
+ LDYIM &00
+NEWINT STY ITYPE
+IEX RTS
+
+ TTL C.F.S. Main routines - EOF
+ OPT MOS74
+
+CFSEOF PHA ;First store Y and A
+ TYA
+ PHA
+ TXA  ;Transfer handle to Y
+ TAY  ;for checking.
+ LDAIM HNDS ;Both handles
+ JSR CHKHND ;NOTE - CORRUPTS Y
+
+ LDA CFSTAT
+ ANDIM LSTBYT
+ TAX  ;Result (zero or non-zero) in X
+ PLA
+ TAY
+ PLA  ;Restore A and Y
+ RTS
+
+ TTL C.F.S. UTILITIES - MOS74
+ OPT &01
+
+;****** CASSETTE UTILITIES ******
+
+
+SRCH0 LDAIM &00
+ STA BLOKNO
+ STA BLOKNO +&01
+
+SEARCH
+
+
+;File title pointed to by FTPTR.
+;Block number in BLOKNO.
+
+;Tool through tape until found. If messages
+;on, print header info and checksum messages.
+
+ LDA BLOKNO
+ PHA
+ STA SRCHBK
+ LDA BLOKNO +&01
+ PHA
+ STA SRCHBK +&01 ;Set block to search for
+ JSR MSGOUT
+ = "Searching",MCR,&00
+ LDAIM &FF ;=> search and validate
+ JSR LOOK
+ PLA
+ STA BLOKNO +&01
+ PLA
+ STA BLOKNO
+ LDA SRCHBK
+ ORA SRCHBK+&01
+ BNE SRCHXX
+
+;If finding first block, set next expected
+;block to zero so that a load will not
+;fail because of a new file breaking into
+;a previous one thus causing non-sequential
+;blocks and therefore a block? error.
+
+ STA BLOKNO ;If first block, no block error
+ STA BLOKNO +&01
+
+;Check header CRC so that we only latch
+;onto non-corrupt file names
+
+ LDA HDRCRC
+ BNE SRCHXX
+ LDXIM INFO -&01 ;Make sure looking for
+ JSR MOVFN ;file name found in subsequent blocks
+SRCHXX  ;Check if run off the end of SROM system
+
+ LDA SROMSW
+ BEQ SRCHYY ;In CFS, carry on
+ BVS SRCHYY ;Not end of ROM => continue
+FNF
+ BRK
+ = SFSER1
+ = "File not found",&00
+
+SRCHYY LDYIM &FF ;For LOAD and RDBFER
+ STY OLDFLG ;Fool PRTHDR to print
+   ;extra blank line after "Loading" message
+ RTS
+
+
+ECLOSE  ;close EXEC file
+
+ LDAIM ZERO
+;
+EXEC  ; EXEC <filename>
+
+; XY -> filename
+; A = $00
+;
+; does not corrupt Y if just closing file (used by SHUTES)
+;
+ PHP ;remember whether to just close exec file
+ STY EXECY ;save Y
+; close any previous exec file
+ LDY EXECH
+ STA EXECH ;clear execing
+ BEQ EXEC2 ;[no current exec file, avoid closing all files]
+; A=0
+ JSR OSFIND ;close previous exec file (assumes X not corrupted)
+EXEC2
+ LDY EXECY ;restore Y
+ PLP
+ BEQ EXEC0 ;[just stop execing]
+; try opening specified file
+ LDAIM &40 ;open file for input
+ JSR OSFIND
+ TAY
+ BEQ FNF ;[file not found]
+ STA EXECH ;remember exec file handle
+EXEC0  ;Z=1
+ RTS
+
+
+RDBFER
+
+
+;Read a block into input buffer. Used in GETBYTE
+
+ LDXIM INFILE -&01
+ JSR MOVFN ;Set file searching for
+ JSR RDHEAD
+
+RDBFRS
+
+ LDA INFO +BKFLAG ;Check protection bit
+ LSRA
+ BCC RDBFLL ;Not protected -> continue
+ JMP PROTER ;Protected -> error
+
+RDBFLL LDA NEXTIN
+ STA BLOKNO
+ LDA NEXTIN +&01
+ STA BLOKNO +&01 ;Set block no. to check
+
+ LDAIM INBUFR
+ STA BKADDR
+ LDAIM /(INBUFR )
+ STA BKADDR +&01
+ LDAIM &FF
+ STA BKADDR +&02
+ STA BKADDR +&03 ;Input buffer is in IO proc.
+ JSR READBK ;Read data into buffer
+ JSR LODHDR
+ BNE RDBERR
+
+;Data read ok, inc. next expected block.
+
+ LDA INBUFR +&FF 
+ STA FINBYT ;Store final byte of this buffer in safe place
+
+ JSR NXTBLK ;Next block = current block + 1
+;NOTE - corrupts BLOKNO
+
+ STX NEXTIN
+ STY NEXTIN +&01
+
+ LDXIM &02
+
+;Set block size and flag byte
+
+RDBFL1 LDAAX INFO +BKSZEL
+ STAAX INBSZE
+ DEX
+ BPL RDBFL1
+ BIT BUFFLG
+ BPL RDBFL8
+ JSR NOOLN1 ;If last block, new line
+
+RDBFL8 JMP CASMOF ;Motor off, exit
+
+;From here down, dealing with errors
+
+RDBERR
+
+;Retry - search for block number, and
+;then go back to RDBFRS.
+
+ JSR SEARCH ;FTPTR already set by RDHEAD.
+ BNE RDBFRS ;Restart (always jump back)
+
+
+
+
+
+RDHDLC CMPIM "*"
+ BEQ RDHDLA ;Char OK, go on to rest of block
+ CMPIM "#" ;Is this a short header ??
+ BNE ROMER ;No -> illegal char -> error
+ INC INFO +BKNOLO ;Have "read" short block header, so
+ BNE RDHDX2 ;increment block number as if we have read whole header
+ INC INFO +BKNOHI
+RDHDX2 LDXIM &FF ;Prepare for non-DCD exit
+ BIT FFBYT ;Set the V flag => not end of SFS
+ BNE RDHDX1 ;Assumed always +ve
+
+ROMER LDAIM NCTBIT
+ 
+;Switch CAT bit off so messages not in a funny
+;state if error occurs in *CAT
+
+ JSR ANDSTA
+ BRK
+ = SFSERR
+ = "Bad ROM"
+ = &00
+
+RDHDL2
+
+;Here, set motor on and 6850 init etc.
+
+ LDYIM READFX ;Indicate read
+ JSR MOTON ;Motor ON and drive select
+ LDAIM &01
+ STA ITYPE
+ JSR RXINIT ;Init 6850 and blip motor
+
+;Wait for DCD and '* character indicating
+;start of block.
+
+GETHLP JSR ESCAPE
+ LDAIM &03
+ CMP ITYPE
+ BNE GETHLP
+
+RDHDLA LDYIM &00
+ JSR SETJB1 ;Set cheksum etc.
+
+RDHDL1 JSR CASIN ;Read and add to checksum
+ BVC RDHDEX ;Header interrupted by DCD
+ STAAY INFO ;Store in INFO
+ BEQ RDHDL3 ;End of file title (Z set in CASIN)
+ INY
+ CPYIM FTSIZE ;Attempting to read over f.t. end
+ BNE RDHDL1 ;No, => continue
+ DEY
+
+RDHDL3 LDXIM BKINFO ;Now read all info.
+RDHDL4 JSR CASIN
+ BVC RDHDEX ;Header interrupted by DCD
+ STAAX INFO
+ INX
+ CPXIM BKLAST +&02
+ BNE RDHDL4
+
+RDHDEX TYA
+ TAX  ;Preserve Y for exit
+ LDAIM &00
+ STAAY INFO ;Terminate f.t.
+ LDA CHKSUM
+ ORA CHKSUM +&01
+ STA HDRCRC ;Store CRC indication
+RDHDX1 JSR SETJOB
+ STY ITYPE ;If header interrupted => block fin.
+
+ TXA
+ BNE RDHDXX
+
+RDHEAD
+
+;Read header info into INFO. Check file title
+;against FTPTR, and print header info.
+
+;First, wait for DCD followed by "*"
+
+ LDA SROMSW
+ BEQ RDHDL2 ;SFS not enabled, carry on
+
+;Here, SFS enabled, so read first char
+;(assumed to be "*") and go on to read
+;rest of block.
+
+RDHDLD
+ JSR RDSPCH
+ CMPIM SFSEND ;Is "end of ROM" char ?
+ BNE RDHDLC
+ LDAIM CATBIT
+ AND CFSTAT
+ BEQ RDHDL5 ;If not in CAT, don't do new line
+
+ JSR NOOLIN ;New line between ROMs
+RDHDL5 JSR SRNEXT
+
+;Carry clear => not at end of filing system, so
+;read next character, assumed still to be start
+;of header although in new rom.
+
+ BCC RDHDLD
+
+;Carry set => end of filing system, so
+;indicate to outside world in V flag
+ CLV
+ RTS
+
+;Note assumed exit with Y = 0
+;for LOAD and RDBFRS
+
+
+
+
+
+CASIN
+ LDA SROMSW ;is SFS on ?
+ BEQ CASIN1 ;Nope, read from tape
+
+;Force a read from ROM & set IRUPT flag
+
+ TXA
+ PHA
+ TYA
+ PHA
+ JSR RDSPCH
+ STA IBUF
+ LDAIM &FF
+ STA IFLAG ;=> irupt occurred, no DCD
+ PLA
+ TAY
+ PLA
+ TAX
+
+CASIN1 JSR IWAIT
+
+;Note A=IBUF after IWAIT
+
+ [ DEBUG=0
+ PHP
+ PHA
+ JSR WSPHEX
+ PLA
+ PLP
+ ]
+
+
+ADDCRC PHP
+ PHA
+
+CCITTL * &10
+CCITTH * &08
+
+ SEC
+ ROR CRCCNT
+ EOR CHKSUM +&01
+ STA CHKSUM +&01
+CRC1 LDA CHKSUM +&01
+ ROLA
+ BCC CRC2
+ RORA
+ EORIM CCITTH
+ STA CHKSUM +&01
+ LDA CHKSUM
+ EORIM CCITTL
+ STA CHKSUM
+ SEC
+CRC2
+
+ ROL CHKSUM
+ ROL CHKSUM +&01
+ LSR CRCCNT
+ BNE CRC1
+ PLA
+ PLP
+RDHDXX RTS
+
+
+
+
+RDBLOK
+
+READBK
+
+;Sets up BG job to read data into BKADDR
+;and read CRC.
+
+;Note: must not corrupt Y !
+
+ LDAIM &00
+CHKBIN STA IBUF ;Indicate read to memory
+ LDXIM &00
+ STX TEMP ;Pointer into data
+;If empty, data read finished, X=$00
+ BVC RDBKEM ;If V clear from header read
+;just ignore all data (since hdr.
+;interrupted by DCD).
+
+ LDA INFO +BKSZEL
+ ORA INFO +BKSZEH
+ BEQ RDBKEM ;Empty block => no BG job
+
+ LDXIM &04
+RDBKEM STX ITYPE
+
+;V not important from here on
+
+ RTS
+
+
+
+
+WRBLOK
+
+WBLOCK
+
+;Write block pointed to by BKADDR. Expects header info
+;to be in INFO and file name in FILNAM.
+
+;Assumes 6850 is in reset state, and SERPROC
+;is set with motor on.
+
+ PHP  ;Save I'rupt state
+ LDXIM &03 ;Set spare bytes
+ LDAIM &00
+SETSPR STAAX INFO +BKSPAR
+ DEX
+ BPL SETSPR
+
+ LDA INFO +BKNOLO
+ ORA INFO +BKNOHI
+ BNE WRBKL5 ;Not first block, continue
+ JSR LEADER
+ BEQ WRBKL4 ;Always Z exit
+
+WRBKL5 JSR PUTGAP ;Put out inter-block gap
+
+WRBKL4 LDAIM "*"
+ STA IBUF ;Start of block char is output IMMEDIATELY
+;on TXINIT.
+
+ JSR SETJOB
+
+ JSR TXINIT ;Get 6850 ready
+ JSR IWAIT ;Wait for * to go out
+
+ DEY  ;Set zero by SETJOB
+WRBKL1 INY
+ LDAAY FILNAM ;Set Z flag if file terminator
+ STAAY INFO ;PRTHDR expects INFO to have f.t. in it
+ JSR PUTCHK
+
+;Note Z flag kept over PUTCHK
+
+ BNE WRBKL1 ;File title out.
+
+ LDXIM BKINFO
+WRBKL2 LDAAX INFO ;Rest of header to tape
+ JSR PUTCHK
+ INX
+ CPXIM BKLAST
+ BNE WRBKL2
+
+ JSR PUTCRC
+
+ LDA INFO +BKSZEL
+ ORA INFO +BKSZEH
+ BEQ WRBKEM ;Empty block
+
+ LDYIM &00
+ JSR SETJB1
+WRBKL3
+ [ TUBESW=0
+ LDAIY BKADDR ;Load byte from IO proc.
+
+ JSR TUBCHK ;Check tube present and top two bytes of address
+ BEQ WRBKL6 ;Yes, continue. (Note TAX done in TUBCHK)
+ LDX TREG3 ;No, get from tube
+
+WRBKL6 TXA  ;Restore byte from RAM
+ |
+ LDAIY BKADDR ;If no tube, read from RAM
+ ]
+
+ JSR PUTCHK ;Output data
+ INY
+ CPY INFO +BKSZEL
+ BNE WRBKL3
+
+ JSR PUTCRC
+WRBKEM JSR IWAIT ;Wait for irupt => char on tape
+ JSR IWAIT
+ JSR CRESET ;Reset for interblock gap
+ LDAIM &01
+ JSR PAUSE ;1/10 sec delay to clear heads
+ PLP  ;Restore I'rupt status
+
+ JSR SAVHDR ;Finally, print info
+ BIT INFO +BKFLAG
+ BPL WRBKEX ;Not last block
+ PHP
+ JSR TAIL
+ JSR FINOP
+ PLP
+
+;Exit MI if last block, PL otherwise
+WRBKEX RTS
+
+
+
+
+
+
+PUTCHK
+
+;Output byte to cassette and add to check sum.
+
+ JSR PUTCAS
+ JMP ADDCRC
+
+
+
+
+PUTCRC LDA CHKSUM +&01
+ JSR PUTCAS
+ LDA CHKSUM
+
+
+PUTCAS
+
+;Put byte to cassette
+
+ STA IBUF
+
+IWAIT JSR ESCAPE
+ BIT IFLAG
+ BPL IWAIT
+
+ LDAIM &00
+ STA IFLAG ;Zero IFLAG
+ LDA IBUF ;Restore A
+ RTS  ;Note V preserved
+
+
+
+LEADER
+
+TAIL
+
+;Assumes RESET done by WRBLOK
+
+ LDAIM &32
+ BNE PAUSE ;5 secs hitone altogether.
+
+
+
+PUTGAP
+
+;Note is assumed indivisible by PUTBYT
+
+ LDA GAPTIM
+
+PAUSE
+
+;Pause for A/10 secs (while putting out
+;leaders and gaps mainly).
+
+ LDXIM &05
+PSLOP1 STA CYCLE
+PSLOOP JSR ESCAPE
+ BIT CYCLE
+ BPL PSLOOP
+ DEX
+ BNE PSLOP1
+ RTS
+
+
+
+PRTHDR
+
+;Print header details.
+;Keeps count of file size and prints
+;total file length when last block is indicated.
+;Expects block info to be in INFO.
+
+
+ LDA INFO +BKNOLO
+ ORA INFO +BKNOHI
+ BEQ PRTHL8 ;If first block, is new file
+ BIT OLDFLG ;If previous block = last block
+ BPL PRTHL3 ;then new line
+
+PRTHDL
+PRTHL8 JSR NOOLN1 ;New line if messages on and no error
+
+SAVHDR
+
+;Entry from WRBLOK
+
+PRTHL3 LDYIM &00
+ STY ERRSW
+ LDA INFO +BKFLAG
+ STA OLDFLG ;Set prev. flag
+
+
+ JSR MSGON
+ BEQ PRTHLX ;Messages off => exit
+
+ LDAIM MCR
+ JSR OSWRCH
+
+; Note assumed here Y is preserved over
+;calls to MSGON and OSWRCH.
+
+PRTHL1 LDAAY INFO
+ BEQ PRTHL2 ;Zero terminator for filename
+
+ CMPIM &20
+ BCC PRTHLD ;A<$20 => control char => invalid
+ CMPIM &7F
+ BCC PRTHLC ;$20<=A<$7F => Valid
+
+PRTHLD LDAIM "?" ;Otherwise, print ??
+PRTHLC JSR OSWRCH ;Write file title
+ INY
+ BNE PRTHL1
+
+PRTHL2 LDA SROMSW
+ BEQ PRTHLF ;In CFS -> continue
+ BIT USFLGS
+ BVC PRTHLX ;SFS short msgs => file name only
+
+PRTHLF JSR PRTSP
+ INY
+ CPYIM FTSIZE
+ BCC PRTHL2
+
+ LDA INFO +BKNOLO
+ TAX  ;Store for final length
+ JSR WHEX ;Write block no. lo
+
+ BIT INFO +BKFLAG
+ BPL PRTHLX ;Not last block -> finish
+
+;Here, is last block -> print total length
+
+ TXA  ;X set at PRTHLA
+ CLC
+ ADC INFO +BKSZEH ;Gross huh ?
+ [ LENSW=0
+ STA FSIZE + 1 ;Store for load to modify OSFILE block
+ ]
+ JSR WSPHEX
+ LDA INFO +BKSZEL
+ [ LENSW=0
+ STA FSIZE ;Store for load to modify OSFILE block
+ ]
+ JSR WHEX
+
+ BIT USFLGS
+ BVC PRTHLX ;=> Short messages => exit
+
+;Here doing long messages
+
+ LDXIM &04
+PRTHLV JSR PRTSP
+ DEX
+ BNE PRTHLV
+
+ LDXIM BKLOAD +&03
+ JSR PRTHLT
+ JSR PRTSP
+ LDXIM BKEXEC +&03
+
+PRTHLT LDYIM &04
+PRTHLU LDAAX INFO
+ JSR WHEX
+ DEX
+ DEY
+ BNE PRTHLU
+
+RECEXX
+PRTHLX RTS
+
+
+
+
+RECORD
+
+ LDA SROMSW
+ BEQ RECRD2 ;OK if not in SFS
+ JMP MBDCMD ;Otherwise bad command
+
+RECRD2
+ JSR MOTONW ;Motor ON for OUTPUT
+ JSR BUGFIX
+ JSR MSGON
+ BEQ RECEXX
+
+ JSR MSGOUT ;If messages ON, prompt
+ = "RECORD then RETURN"
+ = &00
+
+GETCR1 JSR ESCAPE
+ JSR OSRDCH
+ CMPIM MCR
+ BNE GETCR1
+ JMP OSNEWL
+
+
+ LNK MOS76
+

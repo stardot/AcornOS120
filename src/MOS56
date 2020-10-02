@@ -1,0 +1,743 @@
+
+; > MOS56
+ TTL MOS56         Keyboard management
+ OPT MOS56
+;(c) 1981 ACORN Computers Limited
+;BBC Microcomputer Machine Operating System (MOS)
+;Change record:
+;202 01-May-82 PB     Programmable TAB key
+;.05 16-Nov-81 PB     Fix CTRL/SHIFT matrix h/w problem
+;100 04-Sep-81 PB     Remove SHIFT and CTRL debounce
+;Author(s):
+;PB     Paul Bond
+;MP     Mike Prees
+; STATUS BYTE USES (KSTAT)
+; N.B. status byte is NEVER zero
+;      (CAPITALS and SHIFT lock never concurrent)
+; BIT 0   not used
+; BIT 1   not used
+; BIT 2   not used
+; BIT 3   SHIFT
+; BIT 4   not CAPITALS lock
+; BIT 5   not SHIFT lock
+; BIT 6   CTRL
+; BIT 7   shift enable (only meaningful if a lock is active)
+; SEQUENCE OF EVENTS :-
+; 1. CHECK SHIFT KEY
+; 2. CHECK CONTROL KEY
+; 3. PROCESS CURRENT KEY
+; 4. PROCESS OLD KEY
+; 5. SCAN KEYS IF REQ'D
+; 6. ENABLE CA2 IF REQ'D
+
+
+KBDAW
+ LDXIM &FF ;prepare to enable keyboard timer interrupts
+;
+; IF ALL KEYS UP & FORGOTTEN, RESTORE INTERRUPTS
+;
+ LDA CKEY
+ ORA OKEY
+ BNE KBDISX ;[at least one active key, so keep keyboard interrupt disabled]
+;
+; enable keyboard interrupt
+;
+ LDAIM &81
+ STA IERQ
+ INX ;X:=0, disable keyboard timer interrupts
+;
+KBDISX
+ STX KSEMA ;set keyboard timer interrupt control flag
+; $00 => disabled,  $FF => enabled
+;
+KBDIS
+ PHP
+; disable keyboard, coping with CAPITALS & SHIFT lock LEDs
+ LDA KSTAT
+; isolate CAPITALS lock and SHIFT lock states
+ LSRA
+ ANDIM &18
+; update LED1 (CAPITALS lock)
+ ORAIM &06 ;use addressable latch output 6
+ STA PBQ ;store LED1
+; update LED2 (SHIFT lock)
+ LSRA ;move state into bit3
+ ORAIM &07 ;use addressable latch output 7
+ STA PBQ ;store LED2
+;
+ [ TRUE=0
+ JSR KALLOX
+ |
+ LDAIM &0B ;disable keyboard (i.e. enable hardware matrix scan)
+ STA PBQ
+ ]
+;
+ PLA
+ RTS
+
+DEFKEY  ;keyboard control effect
+;
+; entered with:
+; C=0, V=0  =>  SHIFT/CTRL test
+; C=1, V=0  =>  keyboard scan
+; C=0, V=1  =>  keyboard interrupt
+; C=1, V=1  =>  timer interrupt
+;
+; route keyboard entry reason
+;
+ BVC KEYV0 ;[V=0]
+;
+ LDAIM &01
+ STA IERQ
+;
+ BCS KYBD ;[timer interrupt entry]
+ JMP KBDAT ;[keyboard interrupt]
+;
+KEYV0
+ BCC TSHIFT ;[SHIFT/CTRL test]
+ JMP SKFMA ;C=1, scan keyboard
+
+KYBD  ;C=1
+; entered when key(s) active AND timer interrupt
+;
+; ensure no more keyboard timer interrupts
+ INC KSEMA ;KSEMA := 0
+;
+TSHIFT  ;C=0
+; entry point used by test shift routine (uses C=1)
+; clear SHIFT and CTRL status
+ LDA KSTAT
+ ANDIM CTLSHI ;N.B. A will accumulate new state
+; set SHIFT key status
+ LDXIM ZERO ;N.B. SHIFT key is at matrix entry 0
+ JSR KC ;get state of SHIFT key
+; N.B. C not corrupted
+ STX KTEMP ;save state of SHIFT key for SHIFT/CAPS invert feature
+; KTEMP = 1xxx xxxx => SHIFT
+; KTEMP = 0xxx xxxx => no SHIFT
+ CLV
+ BPL KYBD1 ;[SHIFT key not active]
+; shift key active and within timer interrupt routine
+ BIT FFBYT
+ ORAIM SHFT
+KYBD1
+; set CTRL key status
+ INX ;X := 1,  N.B. CTRL key is at matrix entry 1
+ JSR KC ;get state of CTRL key
+ BCC KBDIS ;[testing CTRL and SHIFT, MI=>CTRL, V=>SHIFT]
+ BPL KYBD2 ;[CTRL key not active]
+; CTRL key active
+ ORAIM CTRL
+KYBD2  ;A has accumulated new keyboard status
+ STA KSTAT ;update keyboard status
+; evaluate status of the current key
+; IF IT IS & WAS OPEN, THEN FORGET IT
+; IF OPEN & WAS CLOSED, MARK AS OPEN
+; IF CLOSED & WAS OPEN, MARK AS CLOSED
+; IF CLOSED & WAS CLOSED, THEN DECREMENT
+; AUTO-REPEAT COUNTER. IF THIS GOES TO
+; ZERO (IT STARTS AT 1 INITIALLY) THEN
+; TRANSMIT CHARACTER TO RDCH BUFFER
+; (UNLESS IT IS SHF LOCK OR CAPS LOCK)
+; IF AUTO REPEAT PERMANENTLY DISABLED
+; THEN DON'T RESET THIS COUNTER.
+ LDX CKEY
+ BEQ KBDWU ;[no current key]
+; current key exists
+ JSR KC ;get status of current key
+ BMI KBDX ;[current key closed]
+; current key open
+ CPX CKEY
+KBDW
+ STX CKEY ;update open/closed state of current key
+ BNE KBDWU ;[current key: is open was closed, or is closed was open]
+; CURRENT KEY HAS BEEN OPEN FOR TWO CLOCK
+; CYCLES, SO 'FORGET' IT BY ZEROING CKEY
+; (KEY VALUES START AT 16 IN THIS RTNE)
+; ALSO SET COUNTER TO 1
+; indicate no current key
+ LDXIM ZERO
+ STX CKEY
+FCSP  ;fix to CTRL/SHIFT h/w problem
+ JSR AR ;update auto-repeat intervals
+KBDWU
+ JMP KBDY
+KBDX  ;current KEY IS CLOSED:IF WAS OPEN,SIMPLY
+; UPDATE STATUS,ELSE CHECK COUNTER
+; AND PROCESS CHAR IF REQ'D.
+ CPX CKEY
+ BNE KBDW ;[current key: is closed, was open]
+; current key is closed and was closed
+ LDA ARCTR
+ BEQ KBDXS ;[auto-repeat suppressed]
+; decrement auto-repeat countdown
+ DEC ARCTR
+ BNE KBDXS ;[auto-repeat interval not exhausted]
+; auto-repeat interval exhausted
+; auto-repeat countdown := delay/repeat period
+ LDA FARCTR
+ STA ARCTR
+; next auto-repeat interval := repeat period
+ LDA ARSET
+ STA FARCTR
+;
+ LDA KSTAT
+; test for shift lock key
+ LDX CKEY
+ CPXIM SHLKKY ;IS THIS THE SHIFT LOCK?
+ BNE KCPLK ;[key is not SHIFT lock]
+;
+; SHIFT LOCK key processing
+ ORAIM CAPSL+INVERT ;clear CAPITALS lock state
+ EORIM SHFTL+INVERT ;flip SHIFT lock state and clear invert
+KEYBD3  ;update keyboard status
+ STA KSTAT ;store SHIFT lock state
+; suppress auto-repeat
+ LDAIM ZERO
+ STA ARCTR
+KBDXS
+ JMP KBDY
+
+KCPLK  ;CAPS key processing
+ CPXIM CPLKKY
+ BNE KCPLK1 ;[not CAPITALS lock]
+; clear SHIFT lock state
+ ORAIM SHFTL+INVERT
+; add in SHIFT invert status
+ BIT KTEMP
+ BPL KCPLK2 ;[not SHIFT/CAPS]
+; SHIFT/CAPS - force CAPS invert
+ ORAIM CAPSL
+ EORIM INVERT
+KCPLK2
+; flip CAPITALS lock state
+ EORIM CAPSL+INVERT
+; set CAPITALS lock state and disable auto-repeat
+ JMP KEYBD3
+
+KCPLK1
+; AT THIS POINT, WE HAVE A CHARACTER FOR RDCH
+; NOW LOOK UP CODE AND MODIFY BY SHIFT
+; CONTROL OR CAPS LOCK AS APPROPRIATE
+; convert current key code to ASCII
+ LDAAX KTBL -&80
+ BNE NTAB ;[not TAB key]
+; TAB key
+ LDA TABCOD
+NTAB
+
+ [ FALSE=0
+; do not apply CTRL, SHIFT or parity corrections to SPACE, CR or DEL
+ CMPIM SPACE
+ BEQ KINSRT ;[space character]
+ CMPIM CR
+ BEQ KINSRT ;[carriage return]
+ CMPIM MDEL
+ BEQ KINSRT ;[delete]
+; check for parity mode
+ LDY PMODE
+ BEQ NPMODE ;[not parity mode]
+; parity mode - check for TAB key
+ CPXIM TABKY
+ BNE NPMODE ;[not TAB key]
+; TAB key
+ LDYIM &80
+ STY KFLAG ;set keyboard mask to OR in top bit
+ BNE KBDXR ;[ALWAYS jump, ignore key]
+NPMODE
+ ]
+
+; setup for KSTAT tests
+ LDX KSTAT
+ STX KTEMP
+; check for CTRL
+ ROL KTEMP
+ BPL KCONV6 ;[no CTRL]
+; cannot support two-key rollover with CTRL (h/w constraint)
+ LDX OKEY
+FCSP1  ;chained branch
+ BNE FCSP ;[at least two keys pressed]
+; convert character to associated control character
+ JSR CTRLCH
+KCONV6
+; check for SHIFT lock
+ ROL KTEMP
+ BMI KCONV3 ;[no SHIFT lock]
+; shift character
+ JSR SHIFT
+ ROL KTEMP ;skip over CAPITALS lock state
+ JMP KCONV4 ;skip processing of CAPITALS lock
+KCONV3
+; check for CAPS lock
+ ROL KTEMP
+ BMI KCONV2 ;[no CAPS lock or SHIFT lock]
+; convert character to upper case
+; check for character in the range 'A' to 'Z' or 'a' to 'z'
+ JSR CAPS
+ BCS KCONV2 ;[not alpha]
+; character is an alpha
+ JSR SHIFT ;invert case of alpha
+KCONV4
+; check for shift disabled
+ LDX KSTAT
+ BPL KCONV1 ;[shift disabled]
+KCONV2  ;check for SHIFT
+ ROL KTEMP
+ BPL KCONV1 ;[no SHIFT]
+; cannot support two-key rollover with SHIFT (h/w constraint)
+ LDX OKEY
+ BNE FCSP1 ;[at least two keys pressed]
+; shift character
+ JSR SHIFT
+KCONV1
+;
+; check for interrupt character
+;
+ CMP INTCH
+ BNE KESC1 ;[not interrupt character]
+ LDX ESCHAR
+ BNE KESC1 ;[treat as normal character]
+;
+; X=0,  Z=1
+;
+ STX ARCTR ;suppress auto-repeat for escape if escape condition enabled
+KESC1
+;
+; allow interrupts
+;
+ TAY ;Y := character (will be passed to RDCHS)
+ JSR KALLOW
+;
+; insert character into RDCH buffer
+;
+ LDA NETKDS
+ BNE KBDY ;[keyboard disabled]
+ JSR RDCHS
+;
+KBDY  ; NOW WE EVALUATE THE OLD KEY STATUS.
+; IF OPEN FOR 2 CLOCK CYCLES, FORGET IT
+; OTHERWISE, SIMPLY MEMORISE IT!
+ LDX OKEY
+ BEQ KBDA ;[old key does not exist]
+;
+; old key exists
+ JSR KC
+ STX OKEY ;remember old key state
+ BMI KBDA ;[old key closed]
+;
+; old key open
+ [ FALSE=0
+; following code should never be executed 'cos of STX OKEY
+ CPX OKEY
+ BNE KBDA ;[old key: is open, was closed]
+ ]
+;
+; old key: is open, was open
+ LDXIM ZERO
+ STX OKEY ;indicate no old key
+KBDA  ; NOW CHECK TO SEE IF A SCAN IS NEEDED.
+; IF OLD KEY ZERO, DO SCAN. IF KEY DOWN &
+; NOT EQUAL CKEY THEN SET OLD=CURRENT, & THIS
+; ONE = CURRENT, RESET STATUS CHANGE BITS
+ LDX OKEY
+ BNE KBDAU ;[old key exists]
+; no old key so scan keyboard
+ LDYIM CKEY
+ JSR ISCAN
+ BMI KBDAS ;[all keys searched]
+; closed key found other than current key
+; new current key found
+; set old key = current key
+ LDA CKEY
+ STA OKEY
+KBDAR  ;set new current key
+ STX CKEY ;current key := new key number
+ JSR AR ;update auto-repeat intervals
+KBDAS JMP KBDAW
+KBDAT
+; ENTRY POINT FROM ANY KEY
+; DOWN INTERRUPT
+; enable keyboard by scanning random key (X)
+ JSR KC
+KBDAU  ;find new current key
+ LDA CKEY
+ BNE KBDAS ;[current key exists, should only exist during power up]
+; scan keyboard matrix entries
+ LDYIM OKEY
+ JSR ISCAN
+ BMI KBDAS ;[processed all keys]
+; pressed key found other than old key
+; new current key identified
+ BPL KBDAR ;[ALWAYS JUMP]
+; NEVER fall thru
+
+
+AR  ;set auto-repeat interval to reflect next character
+ LDXIM &01
+ STX ARCTR
+; set next auto-repeat interval to delay period
+ LDX FARSET
+ STX FARCTR
+ RTS
+
+
+ [ FALSE=0
+KSCAN
+; initialise for keyboard scan
+; start scan at matrix element 16, thus
+; avoiding scan of shift, ctrl and start-up options
+; N.B. A and C not corrupted
+ LDXIM &10
+ ]
+
+KC
+; KEYBOARD ACCESS SUBROUTINE
+; read state of key
+; X = 0rrrcccc
+; r = row, c = column
+; N.B. A and C not corrupted
+ [ 1=0 ;$Tutu
+        PHA
+        PHP
+        EORIM   &80
+        TAX
+        LDAIM   &79
+        =       ar_byte
+        PLP
+        PLA
+        STX     &0100   ; N=0 => open,  N=1 => closed
+        LDX     &0100
+        RTS
+ |
+; enable keyboard
+ LDYIM &03
+ STY PBQ
+; select VIAA PA6-PA0 as outputs
+ LDYIM &7F
+ STY DDRAQ
+ STX PAPQ ;select matrix element
+ LDX PAPQ ;read element status:  N=0 => open,  N=1 => closed
+ RTS
+ ]
+
+
+
+
+; KEY CONVERSION TABLE
+; ROW 0
+; not relevant
+; (consists of SHIFT, CTRL and start-up options)
+KTBL0
+KTBL * KTBL0 -&10
+; ROW 1
+ = "q"
+ = "3" ;shift '#'
+ = "4" ;shift '$'
+ = "5" ;shift '%'
+ = SOFTK4 ;f4
+ = "8" ;shift '('
+ = SOFTK7 ;f7
+ = "-" ;shift '='
+ = "^" ;shift '~'
+ = CURLFT ;cursor left (fC)
+
+; 'hide' 6 bytes
+OLDKEY  ;force old key state
+ STY CKEY ;CKEY := 0
+ STX OKEY ;force old key state
+ RTS
+ = NULL ;pad to 6 bytes
+
+;       ROW     2
+ = SOFTK0 ;f0
+ = "w"
+ = "e"
+ = "t"
+ = "7" ;shift single quote
+ = "i"
+ = "9" ;shift ')'
+ = "0" ;same shifted
+POUNDM
+ = "_" ;shift POUND
+ = CURDWN ;cursor down (fE)
+
+; 'hide' 6 bytes
+JMITST JMI TSTSFT
+JMI JMI JMILO ;jump to specific OSBYTE routine, C=1
+
+;       ROW     3
+ = "1" ;shift '!'
+ = "2" ;shift double quote
+ = "d"
+ = "r"
+ = "6" ;shift '&'
+ = "u"
+ = "o"
+ = "p"
+ = "[" ;shift curly left bracket
+ = CURUP ;cursor up (fF)
+
+; 'hide' 6 bytes
+JMIKYV BIT FFBYT
+JMIKEY JMI KEYVEC
+
+;       ROW     4
+ = &01 ;CAPS lock
+ = "a"
+ = "x"
+ = "f"
+ = "y"
+ = "j"
+ = "k"
+ = AT ;same shifted
+ = ":" ;shift '*'
+ = MCR ;same shifted
+
+; 'hide' 6 bytes
+SENDD
+ = &00 ;inputs
+ = &FF ;outputs
+SENDS
+ = &01 ;read enable
+ = &02 ;write enable
+SENDF
+ = &09 ;read disable
+ = &0A ;write disable
+
+;       ROW     5
+ = &02 ;SHIFT lock
+ = "s"
+ = "c"
+ = "g"
+ = "h"
+ = "n"
+ = "l"
+ = ";" ;shift '+'
+ = "]" ;shift curly right bracket
+ = MDEL ;same shifted
+
+; 'hide' 6 bytes
+RMLA  ;read machine low memory address
+ LDY HWM
+ LDXIM ZERO
+ RTS
+
+;       ROW     6
+ = ZERO ;TAB - programmable TAB key
+ = "z"
+ = SPACE ;same shifted
+ = "v"
+ = "b"
+ = "m"
+ = "," ;shift '<'
+ = "." ;shift '>'
+ = "/"; shift '?'
+ = MCOPY ;copy character at cursor (fB)
+
+; 'hide' 6 bytes
+JFLUSH  ;flush input buffer and clear soft key expansion
+ LDX RDCHSW ;X := input bufferid
+FLUSH2
+ JMP PURGE ;purge buffer AND return
+
+;       ROW     7
+ = ESC ;same shifted
+ = SOFTK1 ;f1
+ = SOFTK2 ;f2
+ = SOFTK3 ;f3
+ = SOFTK5 ;f5
+ = SOFTK6 ;f6
+ = SOFTK8 ;f8
+ = SOFTK9 ;f9
+ = "\" ;shift '|'
+ = CURRHT ;cursor right (fD)
+ENDKT
+
+
+JMIEVT JMI EVTVEC ;user event
+
+
+FLUSHC  ;flush buffer
+ BNE JFLUSH ;[flush currently selected input buffer]
+; X=0  => flush all buffers
+FLSHAL  ;flush all buffers
+ LDXIM BUPB
+FLUSH3
+; allow interrupts
+ CLI
+ SEI
+ JSR FLUSHS ;flush buffer given by X
+ DEX
+ BPL FLUSH3
+;
+; N.B. X<0, so is an invalid bufferid (and will be ignored by FLUSHS)
+;
+FLUSHS  ;flush specific buffer
+ CPXIM BUPB +&01
+ BCC FLUSH2 ;[valid bufferid]
+; invalid bufferid
+ RTS
+
+
+HELP  ;*HELP command
+ LDXIM SVHELP
+ JSR SVOP ;Y = offset within line of arguments
+;
+; Y preserved, therefore Y>=2 on return
+;
+ JSR STROUT ;needs Y<>0 to print
+ = MCR
+ = "OS "
+ = VERA
+ = "."
+ = VERB
+ = VERC
+ = MCR
+ = ZERO
+;
+ RTS
+
+
+ISCAN  ;scan keys from matrix address $10
+ CLC ;ignore key addressed by Y
+;
+XSCANA  ;FX entry, scan keys from matrix address $10, C=1 (ignore no keys)
+ LDXIM &10
+;
+XSCANB  ;FX entry, scan keys from matrix address X, C=1 (ignore no keys)
+ BCS JMIKEY ;[route FX entries thru indirection]
+;
+SKFMA  ;scan keys from matrix address (should have C=1)
+; start scan address in X
+; X>=0  =>  scan keys starting at X
+; X<0   =>  investigate key NOT(X)
+;
+ TXA
+ BPL SKFMA2 ;[scan keys]
+; C=1
+; look at key
+;
+ JSR KC ;result in top bit of X (N.B. does not alter C)
+; C=1
+ BCS KALLOX ;return result in A
+;
+SKFMA2
+;
+ PHP ;save request source indicator (in C)
+ BCC SKFMA1 ;[CKEY or OKEY entry]
+ LDYIM CKEY+&02
+SKFMA1
+;
+ STAAY KSCSTA-CKEY ;save scan start address
+; return MI => no keys, otherwise X = key
+ LDXIM &09
+;
+ISCAN1
+; allow interrupts
+;
+ JSR KALLOW
+;
+; select VIAA PA6-PA0 as outputs
+;
+ LDAIM &7F
+ STA DDRAQ
+;
+; claim keyboard
+;
+ LDAIM &03
+ STA PBQ
+;
+; reset keyboard interrupt line
+;
+ LDAIM &0F ;N.B. use non-existent group which does not interrupt
+ STA PAPQ
+;
+; clear latched event
+;
+ LDAIM &01
+ STA IFRQ
+;
+ STX PAPQ ;select key (force no key first time thru loop)
+
+ BIT IFRQ ;test for latched event
+ BEQ ISCAND ;[no group key pressed]
+;
+; key pressed in this group
+;
+ TXA ;A := key at start of group
+;
+ISCANC  ;scan group to find pressed key within group
+; check key against start scan address
+;
+ CMPAY KSCSTA-CKEY
+ BCC ISCANE ;[ignore key]
+;
+ STA PAPQ
+ BIT PAPQ
+ BPL ISCANE ;[individual key not pressed]
+;
+; individual key pressed
+;
+ISCANB  ;key press detected at key A
+;
+; key found
+;
+ PLP
+ PHP
+ BCS ISCAN9 ;[ignore no character]
+;
+ PHA ;save key code
+;
+; check whether to ignore character
+;
+ EORAY ZERO
+ ASLA ;ignore top bit
+ CMPIM &01
+ PLA ;restore key code
+ BCS ISCAN9 ;[accept key]
+;
+; ignore key
+;
+ISCANE  ;ignore key
+ CLC
+ ADCIM &10
+ BPL ISCANC ;[step to next key within group]
+;
+; key group exhausted
+;
+ISCAND  ;scan within group failed
+ DEX
+ BPL ISCAN1 ;[try next group]
+; no key found, X<0
+ TXA ;set up to negate effect of TAX
+;
+ISCAN9  ;accept key
+ TAX ;X := key address
+;
+ PLP
+;
+KALLOW  ;release keyboard and allow interrupts
+; **** MUST NOT CORRUPT Y ****
+; release keyboard
+;
+ JSR KALLOX ;release keyboard
+;
+; allow interrupts
+;
+ CLI
+ SEI
+;
+KALLOX  ;release keyboard
+ LDAIM &0B
+ STA PBQ
+;
+; return result in N
+;
+ TXA ;N=1 => no new key,  N=0 => new key in X
+ RTS
+
+
+
+ < 3
+
+ LNK MOS70

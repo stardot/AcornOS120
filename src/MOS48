@@ -1,0 +1,340 @@
+
+; MOS48
+ TTL MOS48         Miscellaneous routines
+ OPT MOS48
+;(c) 1981 ACORN Computers Limited
+;BBC Microcomputer Machine Operating System (MOS)
+
+;Change record:
+;01/03/82 PB  GSINTC CR indication
+;05/01/82 PB  Change from printer claim to RS423
+
+;Author(s):
+;PB     Paul Bond
+
+
+ TTL MOS48         External interface routines
+ OPT OPNEWP
+
+
+; external interfaces
+
+
+MOSTST
+; C=0 => do not set LEDs,  C=1 => set LEDs
+; N.B. must not corrupt X (see WRCH print section)
+ PHP ;push interrupt state
+ SEI
+; test for ESCAPE
+ LDAIM &40
+ JSR LEDSON ;conditionally set LEDs and test escape condition
+ BMI SHIFTX ;[escape pending, simulate SHIFT without CTRL]
+;
+ CLC ;indicate test ctrl/shift entry point
+ CLV
+ JSR JMIKEY
+;
+SHIFTX  ;b7(A) => CTRL,  b6(A) => SHIFT
+ PLP
+ ROLA ;C => CTRL,  MI => SHIFT
+ RTS
+
+
+LEDSON  ;turn LEDs on
+; ****************************************
+; MUST BE ENTERED WITH INTERRUPTS DISABLED
+; ****************************************
+; C=0 => do not turn LEDs on,  C=1 => turn LEDs on
+; returns status of BIT ESCFLG
+ BCC LEDS0 ;[do not turn LEDs on]
+; set both LEDs (indicating a wait state)
+ LDYIM &07
+ STY PBQ ;PBQ:=$07
+ DEY
+ STY PBQ ;PBQ:=$06
+LEDS0  ;set escape status
+ BIT ESCFLG
+ RTS
+
+CREG  ;called by VDU module
+; interrupts are disabled in order that a spurious
+; ADC interrupt does not occur
+ PHP ;save interrupt state
+ SEI
+ STA PBQ ;set addressable latch value
+ PLP ;restore interrupt state
+ RTS
+
+
+VP0  ;program vidproc register 0 (FX entry)
+ TXA
+MVPRC0  ;set video processor register 0
+ PHP
+ SEI ;**** DISABLE INTERRUPTS ****
+ STA VPREGA ;update RAM image
+ STA VPROC0 ;update ULA
+ LDA FLMRK
+ STA FLCNT ;reset flash count to mark value
+ PLP
+ RTS
+
+VP1  ;program vidproc register 1 (FX entry)
+ TXA
+MVPRC1  ;set video processor register 1
+ EORIM &07 ;adjust value accounting for ULA bug
+ PHP
+ SEI ;**** DISABLE INTERRUPTS ****
+ STA VPREGB ;update RAM image
+ STA VPROC1 ;update ULA
+ PLP
+ RTS
+
+
+GSINTC  ;intialise for string access (read item)
+
+ CLC
+GSINTS  ;initialise for string access (read item/rest of line)
+ ROR KQUOTE
+ JSR SKIPSP ;A := LDAIY WORK
+ INY ;skip possible opening quote
+ CMPIM DQUOTE
+ BEQ CLIOQ ;[opening quote, C=1]
+; no opening quote
+ DEY ;adjust for erroneous skip
+ CLC
+CLIOQ
+ ROR KQUOTE ;PL => not a quoted string,  MI => a quoted string
+ CMPIM MCR ;return EQ => end-of-string,  NEQ => not end-of-string
+ RTS
+;
+GSREAD  ;read character from string
+
+; reset key mask (used in top bit option)
+ LDAIM ZERO
+GSRA  ;used by |! option, entered with A=$80
+ STA KMASK ;KMASK := 0000 0000  (or KMASK := 1000 0000)
+ LDAIY WORK ;A := next character
+ CMPIM MCR
+ BNE KEYNCR ;[not CR]
+; CR found,  C=1
+; check that string did not open with double quote
+ BIT KQUOTE
+ BMI BADSTR ;[opening double quote without closing double quote]
+ BPL GSR1 ;[ALWAYS jump, return C=1 and EQ=>CR]
+KEYNCR  ;character not CR
+ CMPIM SPACE
+ BCC BADSTR ;[control character in string]
+ BNE KEYNSP ;[not space]
+; space character
+ BIT KQUOTE
+ BMI GSR0 ;[in quoted string]
+ BVC GSR1 ;[not in quoted string and not read line, so space is terminator]
+; fall thru, space will be returned as a valid character
+KEYNSP
+ CMPIM DQUOTE
+ BNE KEYNDQ ;[not double quote]
+; double quote found
+ BIT KQUOTE
+ BPL GSR0 ;[not in quoted string]
+; in quoted string
+ INY
+ LDAIY WORK ;get next character
+ CMPIM DQUOTE
+ BEQ GSR0 ;["" found in quoted string]
+GSR1  ;closing quote of quoted string
+ JSR SKIPSP ;skip spaces
+ SEC
+ RTS
+
+KEYNDQ  ;character not CR or "
+ CMPIM "|" ;check for pseudo-escape
+ BNE GSR0 ;[valid string character]
+;
+ INY
+ LDAIY WORK
+ CMPIM "|"
+ BEQ GSR0 ;[|| found]
+;
+ CMPIM DQUOTE
+ BEQ GSR0 ;[|" found]
+;
+ CMPIM "!"
+ BNE KEYNPL ;[not |!]
+; C=1
+; |! found - top bit option
+ INY ;step to next character
+; C=1
+ LDAIM &80 ;KMASK := 1000 0000
+ BNE GSRA ;[ALWAYS jump, get next character reseting key mask]
+; NEVER fall thru
+
+KEYNPL  ;check for control character
+ CMPIM SPACE
+ BCC BADSTR ;[string contains a control character]
+; convert to CTRL character
+ CMPIM "?"
+ BEQ KEYDEL
+ JSR CTRLCH
+; fall thru with adjusted character
+ BIT FFBYT ;indicate character was escaped
+ BVS GSRX ;[ALWAYS jump]
+;
+KEYDEL  ;|?
+ LDAIM MDEL
+;
+GSR0  ;valid character
+ CLV
+;
+GSRX  ;exit with valid character
+; rotate in selected top bit
+ INY ;skip to next character
+ ORA KMASK ;test character for filing system applications
+ CLC
+; C=0,  V=0 => not escaped,  V=1 => escaped
+ RTS
+
+
+
+BADSTR
+ BRK ;report error 'Bad string'
+ = BADST
+ = "Bad string"
+ = ZERO ;end of message
+
+
+SHIFT  ;perform shift inversion
+;
+; check for '0' character explicitly
+;
+ CMPIM "0"
+ BEQ SHIFT0 ;[character is '0', shift '0' is '0', no action]
+
+; convert characters in range ['A',DEL)
+;
+ CMPIM AT
+ BEQ SHIFT0 ;[AT, no action]
+ BCC SHIFT1 ;[ch<AT]
+;
+; ch >= 'A'
+;
+ CMPIM MDEL
+ BEQ SHIFT0 ;[ch=DEL, no action]
+ BCS SHFLIP ;[ch>DEL, is softkey code]
+;
+; 'A' <= character < DEL
+;
+CTRLSK  ;used by CTRLCH for CTRL/softkey
+ EORIM &30 ;flip bit to effect shift (N.B. EORIM $10 later)
+;
+; N.B. this has mapped '_' to $6F and POUND to $50
+; swop underline and pound characters
+;
+ CMPIM &6F ;i.e. mapped '_'
+ BEQ SHIFT2 ;[underline character]
+ CMPIM &50 ;i.e. mapped POUND (not altered by EORIM $20 anyway)
+ BNE SHIFT1 ;[neither underline nor pound character]
+;
+SHIFT2  ;swop underline and pound characters
+ EORIM &1F
+;
+SHIFT1
+
+; convert characters above '!'
+;
+ CMPIM "!"
+ BCC SHIFT0 ;[ch<'!', no action]
+;
+; '!' <= ch < AT
+;
+SHFLIP
+ EORIM &10 ;$80..$8F -> $90..$9F and vice-versa
+
+SHIFT0
+ RTS
+
+
+CTRLCH  ;compute CTRL version of character
+ CMPIM MDEL
+ BEQ CTRL0 ;[CTRL/DEL = DEL]
+ BCS CTRLSK ;[top bit set, therefore softkey needing EORIM $20]
+
+; pound & underline
+;
+ CMPIM POUND ;make CTRL/pound = CTRL/underline
+ BNE CTRL1 ;[not pound character]
+ LDAIM "_" ;substitute underline for pound
+CTRL1
+
+ [ FALSE=0
+; 0 and SPACE
+ CMPIM "0"
+ BNE CTRL2 ;[not zero]
+ LDAIM SPACE ;substitute SPACE for CTRL/zero
+CTRL2
+ ]
+
+ [ FALSE=0
+; / ? and DEL
+ CMPIM "/"
+ BEQ CTRL3 ;[convert CTRL slash to DEL]
+ CMPIM "?"
+ BEQ CTRL3 ;[convert CTRL query to DEL]
+ ]
+
+ CMPIM AT
+ BCC CTRL4 ;[character < AT so do not convert]
+; AT <= character < DEL, so convert
+ ANDIM &1F ;convert to ctrl value
+CTRL4
+
+CTRL0
+ RTS
+
+ [ FALSE=0
+CTRL3 LDAIM MDEL
+ RTS
+ ]
+
+
+SLBOOT  ;'/!BOOT' auto-boot string
+ = "/!BOOT"
+ = MCR
+
+
+BREAK  ;conditionally intercept BREAK
+; type of interception is in C
+ LDA BREAKI
+ EORIM &4C
+ BNE BREAK0 ;[not a JMP instruction]
+ JMP BREAKI
+
+
+TV  ;alter TV characteristics
+ LDA VERTIC
+ STX VERTIC ;vertical height adjust
+ TAX ;X := old state
+ TYA
+ ANDIM &01
+ LDY INTERL ;Y := old state
+ STA INTERL ;interlace invert
+BREAK0
+ RTS
+
+
+WFRED
+ TYA
+ STAAX FRED
+ RTS
+
+WJIM
+ TYA
+ STAAX JIM
+ RTS
+
+WSHEIL
+ TYA
+ STAAX SHEIL
+ RTS
+
+
+ LNK MOS52

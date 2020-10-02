@@ -1,0 +1,501 @@
+
+; MOS40
+ TTL MOS40         Machine operating system internal commands
+ OPT MOS40
+;(c) 1981 ACORN Computers Limited
+;BBC Microcomputer Machine Operating System (MOS)
+;Change record:
+;033 12-Aug-81 PB     Reset SKNEND code, check KEY line termination
+;032 12-Aug-81 PB     Extracted from CLI code
+;Author(s):
+;PB     Paul Bond
+;MP     Mike Prees
+
+
+WRITE
+WRITE1
+ SEI ;another critical region
+ JSR INSRT ;attempt to add character to print queue
+ BCC WRITE0 ;[character inserted into printer buffer]
+; printer buffer full
+; C=1
+ JSR LEDSON ;conditionally set LEDs and test escape condition
+; N.B. does not corrupt C or X
+; C=1
+; reset LEDs
+ PHP
+ PHA
+ JSR KBDIS
+ PLA
+ PLP
+;
+ BMI WRITE0 ;[escape detected]
+ CLI ;enable interrupts to allow printer buffer to purge.
+; Interrupts are enabled at this part of the loop,
+; rather than at the begining (which would save 2 bytes of code)
+; in order to ensure that if the print routine is called with
+; interrupts disabled, then interrupts are not enabled if there is
+; room in the print buffer.
+ BCS WRITE1 ;[ALWAYS jump, wait for room in printer buffer, C=1]
+WRITE0
+ RTS
+
+
+CLRFB  ;clear file control block
+ PHA
+ LDAIM ZERO
+ STAAX FBLOCK
+ STAAX FBLOCK +&01
+ STAAX FBLOCK +&02
+ STAAX FBLOCK +&03
+ PLA
+ RTS
+ROL4  ;rotate hex digit into 4-byte address
+ STY FILEY
+; move nibble into high nibble
+ ROLA
+ ROLA
+ ROLA
+ ROLA
+ LDYIM &04
+ROL4A  ;rotate bit into address
+ ROLA ;C=bit
+ ROLAX FBLOCK
+ ROLAX FBLOCK +&01
+ ROLAX FBLOCK +&02
+ ROLAX FBLOCK +&03
+ BCS MBADHX ;[overflow]
+; C=0
+ DEY
+ BNE ROL4A ;execute loop four times
+; C=0
+ LDY FILEY
+; C=0
+ RTS
+
+
+LOAD  ;LOAD <filename> [load address]
+ LDAIM &FF
+SAVE  ;(A=$00) SAVE <filename> <fromhex> <tohex> [exechex] [loadhex]
+ STX WORK
+ STY WORK +&01
+ STX FBLOCK+FSTR+&0
+ STY FBLOCK+FSTR+&1
+ PHA
+; clear load address
+ LDXIM FLOAD
+ JSR CLRFB
+; set lsb exec address = $FF (preparing for possible LOAD)
+ LDYIM &FF
+ STY FBLOCK+FEXEC ;'use file load address'
+; set to read characters from WORK buffer
+ INY  ;Y:=0
+; skip filename
+ JSR GSINTC
+LS2 JSR GSREAD
+ BCC LS2 ;[string character]
+; determine command type
+ PLA
+ PHA
+ BEQ SAVEX ;[SAVE command]
+; LOAD command
+;
+; read load address
+; N.B. X=FLOAD
+ JSR LSA
+ BCS LOADX1 ;hex present
+ BEQ LS0 ;[just CR terminator]
+MBADHX  ;report error 'Bad address'
+ BRK
+ = BADADR
+ = "Bad address"
+ = ZERO ;message terminator
+
+
+SHUTES  ;shut EXEC and SPOOL files
+
+;
+; inform paged ROMs of intentions
+;
+ LDXIM SVSHES
+ JSR SVOP
+ BEQ SPOOL0 ;[claimed, do not close files]
+;
+; deal with EXEC file
+;
+ JSR ECLOSE ;Close EXEC file
+;
+; close SPOOL file AND return
+;
+ LDAIM ZERO ;Z=1, A=$00
+;
+SPOOL  ;SPOOL <filename>
+; XY -> filename
+; A = $00
+; EQ -> spool off
+;remember whether to just turn spooling off
+ PHP
+; close old spool file
+ STY SPOOLY ;save Y
+ LDY SPOOLH
+ STA SPOOLH ;clear spooling
+ BEQ SPOOL2 ;[not currently spooling]
+; A=0
+ JSR OSFIND ;close spool file
+SPOOL2
+ LDY SPOOLY ;restore Y
+ PLP
+ BEQ SPOOL0 ;[just close spool file]
+; open given spool file
+ LDAIM &80 ;open file for output
+ JSR OSFIND
+ TAY
+ BEQ BADFX ;[open failure]
+ STA SPOOLH
+SPOOL0  ;Z=1
+ RTS
+
+
+LOADX1  ;explicit load address given
+ BNE BADFX ;[no CR terminator]
+ INC FBLOCK+FEXEC ;use explicit load address
+LS0  ;load file
+ LDXIM FBLOCK
+ LDYIM /(FBLOCK )
+ PLA
+ JMP OSFILE
+;
+LSA JSR SKIPSP
+ JSR TSTHEX
+ BCC LSA0 ;[hex not present, return V=1]
+;
+; clear field
+;
+ JSR CLRFB
+;
+; read address
+;
+LSA1 JSR ROL4
+ JSR TSTHEX
+ BCS LSA1
+ SEC ;return C=1
+LSA0  ;Z=1 => CR terminator
+ RTS
+;
+;
+SAVEX  ;SAVE command
+;
+; read FROM address
+;
+ LDXIM FFROM
+ JSR LSA
+ BCC BADFX
+;
+; read TO address
+; check if preceeded by '+'
+;
+ CLV
+ LDAIY WORK
+ CMPIM "+"
+ BNE SAVEX3 ;['+' not present]
+ BIT FFBYT ;V=1
+ INY ;skip '+' symbol
+SAVEX3
+ LDXIM FTO
+ JSR LSA ;N.B. does not corrupt V
+ BCC BADFX ;[to address not given]
+; C=1
+ PHP ;Z => no exec address
+; if '+' was specified then the TO address was really
+; a length specification
+ BVC SAVEX4 ;['+' not specified]
+; convert length to end address
+; N.B. C=1
+MINUS4 * &00FC
+ LDXIM MINUS4
+ CLC
+SAVEX5
+ LDAAX FBLOCK+FFROM-MINUS4
+ ADCAX FBLOCK+FTO-MINUS4
+ STAAX FBLOCK+FTO-MINUS4
+ INX
+ BNE SAVEX5 ;[execute loop four times]
+SAVEX4  ;copy 'from' address to execute and load fields
+ LDXIM &03
+SAVEX1
+ LDAAX FBLOCK+FFROM
+ STAAX FBLOCK+FEXEC
+ STAAX FBLOCK+FLOAD
+ DEX
+ BPL SAVEX1
+; check if exec address present
+ PLP
+ BEQ LS0 ;[no exec address]
+; read exec address
+ LDXIM FEXEC
+ JSR LSA
+ BCC BADFX ;[expected exec address not found]
+ BEQ LS0 ;[no following load address]
+; read load address
+ LDXIM FLOAD
+ JSR LSA
+ BCC BADFX ;[expected load address not found]
+ BEQ LS0 ;[good line termination]
+BADFX
+MBDCMD
+ BRK ;report error 'Bad command'
+ = BADCMD
+ = "Bad command"
+BADKEY BRK ;report error 'Bad KEY' / end of preceeding error message
+ = BADKY
+ = "Bad key"
+ = ZERO ;message terminator
+
+
+KEY  ;KEY <number> <string_value>
+ JSR GETNUM
+ BCC BADKEY ;[bad soft key number (>255)]
+; A = character delimiting number
+; X = NUMBER = CSKEY = key number
+; Y = soft key number argument
+; check soft key number range
+ CPXIM NSOFTK
+ BCS BADKEY ;[soft_key_number > number of soft keys - 1]
+; key number in range 0 to NSOFTK-1
+;
+ [ FALSE=0
+; **** NO LONGER NECESSARY AS NUMBER SHARED WITH CSKEY ****
+ STX CSKEY ;CSKEY := soft key number
+ ]
+;
+ JSR SKPCOM ;skip optional spaces and an optional comma
+ PHP ;save line end status
+ LDX SKEND ;Y points to unused portion of soft key buffer area
+; (set to reset SKNEND as it might have been set as a result
+; of a 'KEY in use' error)
+ TYA
+ PHA
+ JSR SKGCR ;delete soft key (uses value in X)
+; on exit X = SKEND
+ PLA
+ TAY
+ PLP ;restore line end status
+ BNE CLI1 ;[not end of line]
+; end of line - specified soft key value value has been deleted so return
+ RTS
+
+
+
+FX  ;*FX x,y
+ JSR GETNUM ;read FX function code
+ BCC BADFX ;[bad FX number]
+;
+; N.B. C=1
+; push function code
+;
+ TXA
+FXN  ;entry point used by CLI, C=0
+ PHA
+ LDAIM ZERO ;set default argument values
+ STA FXREGX
+ STA FXREGY
+;
+; check for line end
+;
+ JSR SKPCM ;N.B. C=0 => just check for line end
+;
+;     C=1 => skip an optional comma and check for line end
+;
+ BEQ FX1 ;[line end, just a function code]
+;
+; try reading another argument
+;
+ JSR GETNUM
+ BCC BADFX ;[bad FX number]
+;
+; N.B. C=1
+;
+ STX FXREGX
+;
+; check for line end
+;
+ JSR SKPCOM
+ BEQ FX1
+;
+; try reading another argument
+;
+ JSR GETNUM
+ BCC BADFX ;[bad FX number]
+ STX FXREGY
+;
+; ensure line end
+;
+ JSR SKIPSP
+ BNE BADFX ;[bad command termination]
+;
+FX1
+ LDY FXREGY ;load OSBYTE arguments
+ LDX FXREGX
+ PLA
+ JSR OSBYTE
+ BVS BADFX ;[unrecognised FX code]
+ RTS
+
+
+CLI1
+ SEC
+ JSR GSINTS ;initialise for reading quoted string
+CLIWP
+ JSR GSREAD ;read string character
+ BCS CLIY ;end of string
+ INX
+ BEQ BADKEY ;[buffer full, (N.B. buffer assumed to be 256 bytes long)]
+; buffer not full
+ STAAX SKBUF -&01 ;store character in soft key buffer
+;(N.B. note offset of -1)
+ BCC CLIWP ;[ALWAYS jump, go process next character]
+; SOFT KEY FINAL CHECK TO SEE IF ANY OTHER KEY SHARES SAME
+; VALUE POINTER - IF IT DOES THEN SET IT EQUAL TO SKEND
+CLIY
+ BNE BADKEY ;[string not terminated by CR]
+; N.B. new buffer end in X
+ PHP
+ SEI ;** DISABLE INTERRUPTS **
+ JSR SKGCR ;delete old soft key and replace with new value (uses value in X)
+;N.B. sets Y to specified soft key number
+ LDXIM NSOFTK ;X to be roving soft key number
+CLIYP
+ CPX CSKEY
+ BEQ CLIYQ ;[do not process specified soft key]
+ LDAAX SKPTR
+ CMPAY SKPTR ;compare soft key buffer pointers
+ BNE CLIYQ ;[pointers differ]
+ LDA SKEND
+ STAAX SKPTR ;update soft key buffer pointer
+CLIYQ
+ DEX
+ BPL CLIYP ;[go process next soft key]
+ PLP ;** ENABLE INTERRUPTS **
+ RTS
+
+
+SKSIZE  ;A := size of soft key given by Y
+; ** THIS MODULE DISABLES INTERRUPTS **
+; this routine is called by soft key set (via *KEY command)
+; and soft key read (via RDCH processing).
+; the choice is to duplicate the code, using a distinct work slot,
+; or share the code within a critical region in order that SKSZWK
+; may be shared
+ PHP ;save interrupt state
+ SEI ;** DISABLE INTERRUPTS **
+ LDA SKEND
+ SEC
+ SBCAY SKPTR
+ STA SKSZWK ;SKSZWK := number of bytes to end of buffer
+ TXA
+ PHA ;push X
+ LDXIM NSOFTK ;X is roving soft key number
+SKS1
+ LDAAX SKPTR
+ SEC
+ SBCAY SKPTR ;A := length of soft key w.r.t. specified soft key
+ BCC SKS2 ;[ignore negative length]
+ BEQ SKS2 ;[ignore zero length]
+ CMP SKSZWK
+ BCS SKS2 ;[this length >= past lengths]
+ STA SKSZWK ;remember new minimum length
+SKS2 DEX
+ BPL SKS1 ;[go process next soft key]
+ PLA
+ TAX ;restore X
+ LDA SKSZWK
+ PLP ;** RESTORE INTERRUPT STATE **
+; A := length of soft key string
+; Y := soft key number given on entry
+ RTS
+
+
+; SOFT KEY BUFFER GARBAGE COLLECTION ROUTINE.STRING
+; FOR KEY NUMBER GIVEN IN 'CSKEY' IS DELETED & ALL
+; POINTERS ADJUSTED ACC
+SKGCR  ;delete (and insert) key value(s)
+;** THIS MODULE DISABLES INTERRUPTS **
+ PHP ;** SAVE INTERRUPT STATE OF CALLER **
+ SEI ;** DISABLE INTERRUPTS **
+; save new end address
+ TXA
+ PHA
+ LDY CSKEY ;Y is specified soft key number
+ JSR SKSIZE ;A := length of soft key string
+; NOW SKSZWK = LENGTH OF CURRENT SK STRING
+; SO SETUP FOR DELETING THIS STRING.
+ LDAAY SKPTR
+ TAY ;Y points to specified soft key string
+ CLC
+ ADC SKSZWK
+ TAX ;X points to start of byte area to be moved down
+ STA KEYSV
+; TO AVOID MASHING POINTER STRUCTURE IF
+; MACHINE CRASHES ELSEWHERE,IT IS ESSENTIAL
+; THAT INTERRUPTS ARE *OFF* FOR THIS NEXT BIT
+; before altering the data structure, check that a soft key
+; is not being used by RDCH
+ LDA SOFKL ;A := length of soft key in use by RDCH
+ BEQ SK3 ;[no soft key in use]
+; soft key being 'unwound' by RDCH
+; N.B. altering the data structure would confuse RDCH
+ BRK ;report error 'KEY in use'
+ = KEYUSE
+ = "Key in use"
+ = ZERO ;end of error message
+
+SK3
+ DEC USKFLG ;indicate update of soft keys in progress (USKFLG<>0)
+ PLA ;A := new end of buffer
+ SEC
+ SBC KEYSV
+ STA KEYSV ;KEYSV := number of bytes to copy
+ BEQ SKGCV ;[zero bytes to copy]
+SKGCS
+ LDAAX SKBUF ;*MOVE
+ STAAY SKBUF ;*CHARACTERS
+ INY
+ INX
+ DEC KEYSV
+ BNE SKGCS ;[more bytes to copy]
+; NOW ADJUST ALL POINTERS WHICH ARE GREATER
+;  THAN THE ONE AT CSKEY.
+SKGCV
+; save new end address
+ TYA
+ PHA
+ LDY CSKEY ;Y is specified soft key number
+ LDXIM NSOFTK ;X is roving soft key number, including end pointer
+SKGCT
+ LDAAX SKPTR
+ CMPAY SKPTR
+ BCC SKGCU ;[current pointer precedes specified pointer]
+ [ TRUE=0
+ BEQ SKGCU ;[current pointer equals specified pointer]
+ ]
+; current pointer is beyond specified pointer
+; if pointers are equal then specified soft key was null ...
+; ... therefore its size was zero and a drop thru is a no-operation
+; C=1
+ SBC SKSZWK ;C already 1
+ STAAX SKPTR ;adjust current buffer pointer
+SKGCU
+ DEX
+ BPL SKGCT ;[go process next soft key]
+; NOW UPDATE CURRENT KEY POINTER
+ LDA SKEND
+ STAAY SKPTR ;adjust specified soft key pointer to point to end of buffer
+ PLA ;A := new end address
+ STA SKEND ;make end buffer pointers equal
+ TAX ;X := new end of buffer pointer
+ INC USKFLG ;indicate update of soft keys over (USKFLG=0)
+ PLP ;** RESTORE INTERRUPT STATE OF CALLER **
+; X = SKEND
+; Y = specified soft key number
+ RTS
+ LNK MOS42

@@ -1,0 +1,757 @@
+
+; -> MOS32
+ TTL MOS32         Initialisation and external interfaces
+ OPT MOS32
+;(c) 1981 ACORN Computers Limited
+;BBC Microcomputer Machine Operating System (MOS)
+;Change record:
+;Author(s):
+;PB     Paul Bond
+;MP     Mike Prees
+
+
+; origin of real code
+ ORG ORIGIN  ;MOS starts where VDU ends
+
+
+IPAGE0  ;page zero values
+; externally accessed zero page values
+ ^ &00FF
+;
+ESCFLG # 0 ;Bit 7 of this is the escape flag
+
+
+; bit7  escape pending
+;= ZERO
+
+ # -2
+REPTR # &00 ;pointer after BRK
+;= NULL /;hi-byte
+;= NULL ;lo-byte
+
+ # -1
+TEMPA # &00 ;user IRQ routine save slot for register A
+;= NULL
+
+ # -2
+SEIWK # &00 ;two work slots used whilst interrupts disabled
+;
+JMILO * SEIWK +&00 ;used by OSBYTE/OSWORD
+JMIHI * SEIWK +&01 ;used by OSBYTE/OSWORD
+;
+KEYSV * SEIWK +&00 ;work area for ...
+SKSZWK * SEIWK +&01 ; ... soft key compaction (also SKSIZE)
+;
+KTEMP * SEIWK +&00 ;work area for keyboard
+;
+BUFFLO * SEIWK +&00 ;work slots used by buffer management
+BUFFHI * SEIWK +&01
+;
+CRLO * SEIWK +&00 ;work slots used during ROM compare
+CRHI * SEIWK +&01
+;
+MASK * SEIWK +&00 ;work slots used by set Rx/Tx RS423 baud rates
+BAUD * SEIWK +&01
+;
+RSOP * SEIWK +&00 ;work slot used by RSUCTL
+;
+NOTEWK * SEIWK +&00 ;work slot used by NOTE
+;
+EVENTA * SEIWK +&00 ;work slot used by EVENT (hopefully no clashes)
+;
+PEEKLO * SEIWK +&00 ;work slot used by OSWORD read-byte/write-byte
+PEEKHI * SEIWK +&01
+;
+SPWK1 * SEIWK +&00 ;used by speech sprocessing
+SPWK2 * SEIWK +&01 ;used by TIMER2 (speech) interrupt routine
+
+ # -1
+SPARE0 # &00 ;****************
+; = NULL
+
+ # -1
+SPARE1 # &00 ;****************
+;= NULL
+
+ # -2
+ROMPTR # &00 ;pointer used by ROM filing system
+;= NULL
+;= NULL
+
+ # -1
+SEROM # &00 ;serial ROM id
+;= NULL
+
+ # -1
+ROMID # &00 ;currently selected ROM
+
+;= NULL
+
+ # -2
+WORK # &00 ;miscellaneous pointer
+;= NULL
+;= NULL
+
+ # -2
+; WORD values may be shared with other sei-routines
+WORDX # &00
+BYTEX * WORDX
+WORDY * WORDX +&01
+BYTEY * WORDY
+
+ # -1
+WORDA # &00
+BYTEA * WORDA
+;= NULL
+
+ # -1
+PAGE1M # &00 ;selected page for 1MHz bus
+;= ZERO
+
+ # -1
+OKEY # &00 ;current key value
+;= ZERO
+
+ # -1
+CKEY # &00 ;current key value
+;= ZERO
+
+ # -1
+ESSEMA # &00 ;EXEC/SPOOL semaphore (used by CFS)
+
+
+ # -1
+RSTUT # &00 ;RS423 printer timeouT
+;= ZERO
+
+ # -2
+RDLNBF # &00 ;buffer address used by OSWORD readline routine
+
+ # -1
+ARCTR # &00 ;auto-repeat counter
+;= ZERO
+
+ # -1
+WRKCLI # &00 ;shared work slot with interrupts enabled
+;
+RDCTEM * WRKCLI ;used by RDCH
+CLIRY * WRKCLI ;used by CLI decoder
+;
+NUMBER * WRKCLI ;work slot for GETNUM
+CSKEY * NUMBER ;current softkey number (must not share with KMASK or KQUOTE)
+;
+FILEY * WRKCLI ;save area for register Y
+EXECY * FILEY ;save area used by EXEC
+
+SPOOLY * FILEY ;save area used by SPOOL
+;= NULL
+
+ # -1
+FXREGX # &00 ;used by FX CLI command
+KMASK # &00 ;used by GSREAD
+; must not be shared with CSKEY
+;= NULL
+
+ # -1
+FXREGY # &00 ;used by FX CLI command
+KQUOTE # &00 ;must not be shared with KMASK
+; must not be shared with CSKEY
+;= NULL
+
+ # -1
+CFS1 # &00 ;reserved for CFS
+
+ # -1
+;
+; CFS workspace
+; =============
+;
+CFS0 # &00 ;reserved for CFS
+CFSTAT * CFS0
+;PAGE ZERO
+
+PZERO * &00B0 ;Start of p.0 workspace
+
+BKADDR * PZERO ;4 BYTE BLOCK PTR.
+HIADDR * BKADDR +&04 ;Top of data being saved,
+;Must be contiguous with BKADDR
+
+BLOKNO * HIADDR
+SRCHBK * BLOKNO +&02 ;Block numbers being searched for
+;Not used in SAVE, hence can overlap HIADDR
+
+FTPTR * HIADDR +&04 ;Used in VSTRIN
+ERRSW * FTPTR +&02 ;In p.0 to save space
+USFLGS * ERRSW +&01
+TEMP * USFLGS +&01
+IBUF * TEMP +&01
+CHKSUM * IBUF +&01
+IFLAG * CHKSUM +&02
+HDRCRC * IFLAG +&01
+ITYPE * HDRCRC +&01
+CURDRV * ITYPE +&01 ;Currently selected cassette
+IADDR * CURDRV +&01
+SPEED * IADDR +&02
+GAPTIM * SPEED +&01
+GENPTR * GAPTIM +&01 ;Used in FILEGO/LOAD only
+TXFLAG * GENPTR +&02 ;"We are transmitting" flag
+CRCCNT * TXFLAG +&01 ;Used in CRC check
+FSIZE * CRCCNT + 1 ;File size to modify control block in LOAD
+
+OPTS * CFS1 ;Retained over filing system change
+;**************************************
+
+BPAGE0 # &00
+
+
+
+IPAGE2
+; page two values
+ ^ &0200
+APAGE2 # &00
+USRVEC # &02 ;user vector
+ = BADFX
+ = /(BADFX )
+BRKVEC # &02 ;BRK handling
+ = DEFBRK
+ = /(DEFBRK )
+IRQALL # &02 ;all IRQs indirect thru here
+ = DEFIRQ
+ = /(DEFIRQ )
+IRQVEC # &02 ;unrecognised IRQ
+ = IRQTWO
+ = /(IRQTWO )
+COMVEC # &02 ;command line intepreter
+ = CLINT
+ = /(CLINT )
+BYTVEC # &02 ;MOS routine, 0 1 or 2 arguments
+ = BYTE
+ = /(BYTE )
+WORVEC # &02 ;MOS routine, >2 arguments
+ = WORD
+ = /(WORD )
+WRCVEC # &02 ;write character
+ = WRCH
+ = /(WRCH )
+RDCVEC # &02 ;read character
+ = RDCH
+ = /(RDCH )
+CFSTAB
+FILVEC # &02 ;load/save memory image
+ = FILEGO
+ = /(FILEGO )
+ARGVEC # &02 ;read/set file attributes
+ = ARGGO
+ = /(ARGGO )
+BGTVEC # &02 ;get byte from random file
+ = GETBYT
+ = /(GETBYT )
+BPTVEC # &02 ;put byte to random file
+ = PUTBYT
+ = /(PUTBYT )
+GPBVEC # &02 ;get/put bytes
+ = RTS
+ = /(RTS )
+FNDVEC # &02 ;open/close random file
+ = FIND
+ = /(FIND )
+FSCVEC # &02 ;file system control entry
+ = FSFUNC
+ = /(FSFUNC )
+EVTVEC # &02 ;event interrupt
+ = DEFEVT
+ = /(DEFEVT )
+UPTVEC # &02 ;user print routine
+; default hangs printer
+ = DEFUPT
+ = /(DEFUPT )
+NETVEC # &02 ;ECONET effects
+; default hangs printer
+ = DEFNET
+ = /(DEFNET )
+VDUVEC # &02 ;VDU command indirection
+
+ = RTS
+ = /(RTS )
+KEYVEC # &02 ;keyboard control indirection
+ = DEFKEY
+ = /(DEFKEY )
+INSVEC # &02 ;buffer insert indirection
+ = INS
+ = /(INS )
+REMVEC # &02 ;buffer remove indirection
+ = REM
+ = /(REM )
+CNPVEC # &02 ;buffer count / purge buffer indirection
+ = CNP
+ = /(CNP )
+INDONE # &02
+ = RTS
+ = /(RTS )
+INDTWO # &02
+ = RTS
+ = /(RTS )
+INDTRH # &02
+ = RTS
+ = /(RTS )
+VLEN * @-APAGE2
+;
+NP2IND * VLEN:SHR: 1 ;number of page 2 indirections
+ROMIVS * NP2IND* 3 ;page ROM indirection vector size
+ROMVEC * &0DF0-ROMIVS ;paged ROM routine vectors
+
+
+VARS # &00
+;
+ # &02 ;variables origin
+ = VBASE ;166
+ = /(VBASE )
+
+ # &02 ;origin of 3-byte ROM indirection vectors
+ = ROMVEC ;168
+ = /(ROMVEC )
+
+ # &02 ;paged ROM info
+ = ROMS ;170
+ = /(ROMS )
+
+ # &02 ;keyboard matrix info
+ = KTBL ;172
+ = /(KTBL )
+
+ # &02 ;VDU module origin of variables
+ = VARBLE ;174
+ = /(VARBLE )
+
+CYCLE # &01 ;filing system timeout byte
+
+ = NULL
+
+RDCHSW # &01 ;RDCH source switch (assumed not in page zero, see KTBL)
+ = ZERO ;177  BRDCH (zero)
+
+KSEMA # &01 ;keyboard semaphore
+ = &FF ;178
+
+IHWM # &01
+
+ = ZERO ;179
+
+HWM # &01
+
+ = NULL ;180
+
+RS8BIT # &01
+ = &01 ;181  1 => 8 bits,  0 => soft key processing
+
+
+FONTSW # &01 ;current state of font explosion/implosion
+
+ = ZERO ;182
+;
+SROMSW # &01 ;SEROM/cassette switch
+
+ = ZERO ;183  cassette by default
+
+
+VPREGA # &01 ;video ULA control register 0
+ = NULL ;184
+;
+VPREGB # &01 ;video ULA control register 1
+ = NULL ;185
+
+
+REPROM # &01 ;ROM id after BRK
+ = NULL ;186
+;
+BROMID # &01 ;BASIC ROM id
+ = &FF ;187
+
+
+ADCHAN # &01 ;ADC channel number
+ = NADC ;188
+;
+MAXADC # &01 ;maximum ADC channel in use
+ = NADC ;189
+;
+ADCCNV # &01
+ = ZERO ;190  ADC conversion type (12 bits)
+
+
+RSFLAG # &01 ;RS423 use flag
+
+; 1xxx xxxx  =>  dormant
+; 0xxx xxxx  =>  busy
+ = &FF ;191
+;
+RSCTFL # &01
+
+ = RSCDEF ;192
+
+
+;
+FLCNT # &01 ;flash period counter
+ = &19 ;193  1/2 SECOND
+;
+FLASHB # &00 ;used by flash FX calls
+FLSPC # &01 ;flash space period
+ = &19 ;194  1/2 SECOND
+FLMRK # &01 ;flash mark period
+ = &19 ;195  1/2 SECOND
+;
+
+
+;**** FOLLOWING MUST BE CONTIGUOUS (c.f. *FX11 and *FX12) ****
+FARSET # &01 ;first auto-repeat reset
+ = DAUTOD ;196
+ARSET # &01 ;reset for above
+ = DAUTOP ;197
+
+
+EXECH # &01 ;*EXEC handle
+
+ = ZERO ;198
+;
+SPOOLH # &01 ;*SPOOL handle
+
+ = ZERO ;199
+;
+CRIT # &01 ;critical region indicator
+
+ = &00 ;200  not within critical region
+;
+NETKDS # &01 ;net keyboard disable
+ = ZERO ;201  default: not disabled
+;
+KSTAT # &01 ;keyboard status (see MOS56)
+ = SHFTL ;202
+;
+RSHLVL # &01 ;RS423 handshake level
+ = RSOVR+&01 ;203
+;
+RSSHUT # &01 ;suppress RS423 input
+ = ZERO ;204  default:  enable RS423 input
+;
+RSCASS # &01 ;cassette/RS423 serial processor select
+ = ZERO ;205  $00 => select RS423,  $40 => select cassette
+;
+NETIOC # &01 ;net interception of OS calls
+ = ZERO ;206  default: not intercepted
+;
+NETRDC # &01 ;net interception of RDCH
+ = ZERO ;207  default: not intercepted
+;
+NETWRC # &01 ;net interception of WRCH
+ = ZERO ;208  default: not intercepted
+;
+SHUTSP # &01 ;speech suppressor
+ = SPOPSP ;209
+;
+SHUTUP # &01 ;sound suppressor
+ = ZERO ;210  allow sound by default
+;
+BELLC # &01 ;bell channel
+ = &03 ;211
+;
+BELLI # &01 ;bell envelope and chord information
+ = &90 ;212
+;
+BELLN # &01 ;bell frequency
+ = &64 ;213
+;
+BELLD # &01 ;bell duration
+ = &06 ;214
+;
+QUIET # &01
+ = &81 ;215  suppress start-up message / !BOOT option
+;
+SOFKL # &01 ;soft key string length
+ = ZERO ;216
+;
+LINES # &01 ;used by VDU software
+
+ = ZERO ;217  used by VDU software in page mode
+;
+QPOSN # &01 ;VDU queue count
+
+ = ZERO ;218
+;
+TABCOD # &01 ;TAB key code
+ = TAB ;219
+;
+INTCH # &01
+ = ESC ;220  interrupt character (normally ESC)
+;
+SOFTLO # &00
+;221 softkey 10 feature
+EXBREK # &01
+ = &01 ;expand softkey
+;222  reserved
+ # &01
+ = &D0
+;223  reserved
+ # &01
+ = &E0
+;224  reserved
+ # &01
+ = &F0
+;225
+; 0 => enable softkey expansion on fnkey
+; N => return code N+i for fnkey(i), i=0..9
+ # &01
+ = &01 ;return soft strings by default
+;226
+; 0 => enable softkey expansion on SHIFT/fnkey
+; N => return code N+i for SHIFT/fnkey(i), i=0..9
+ # &01
+ = &80 ;return codes $80..$89 by default (user definable characters)
+;227
+; 0 => enable softkey expansion on CTRL/fnkey
+; N => return code N+i for CTRL/fnkey(i), i=0..9
+ # &01
+ = &90 ;return codes $90..$99 by default (user definable characters)
+;228
+; 0 => enable softkey expansion on SHIFT/CTRL/fnkey
+; N => return code N+i for SHIFT/CTRL/fnkey(i), i=0..9
+ # &01
+ = ZERO ;ingnore key combination by default
+
+ESCHAR # &01 ;make INTERRUPT CHARACTER return normal value
+ = ZERO ;229  <>0 => return normal value
+
+EAOPT # &01 ;suppress normal escape acknowledge actions
+ = ZERO ;230  suppress if <> 0
+
+B6522 # &01 ;$00 => no,  $FF => second 6522 present
+FFBYT
+ = &FF ;231  assume 6522B present
+
+C6850 # &01 ;$00 => no,  $FF => 6850 present
+ = &FF ;232  assume 6850 present
+
+A6522 # &01 ;$00 => no,  $FF => primary 6522 present
+ = &FF ;233  assume 6522A present
+
+TUBEM # &01 ;$FF if tube present
+TUBE * TUBEM
+ = ZERO  ;234  assume tube not present
+
+SPFLAG # &01 ;$FF if speech chip present
+ = ZERO ;235
+
+WRCHSW # &01 ;OSWRCH destinations flag
+WRRS * &01 ;WRCH is RS423
+WRVDU * &02 ;WRCH is ***NOT*** VDU
+WRPREN * &04 ;0 => ENABLE PRINT
+WRPRNT * &08 ;WRCH is ***NOT*** print
+WRSPL * &10 ;WRCH is ***NOT*** spool
+WRVDU1 * &40 ;WRCH to printer only by VDU1
+ = ZERO ;236  WRCH is VDU/print/spool
+; ******** DO NOT ALTER ********
+
+CURSED # &01
+ = ZERO ;237
+
+MPAGE2 * @-APAGE2
+
+SPARE8 # &03
+ = ZERO
+ = ZERO
+ = ZERO
+; 238, 239, 240
+
+UFX1 # &01 ;FX 1 value
+ = ZERO ;241
+; ******** DO NOT ALTER ********
+
+SPREGA # &01 ;serial processor register contents
+
+ = B9600 ;242
+
+TIMESW # &01 ;TIME pointer, either 5 or 10
+ = &05 ;243
+
+USKFLG # &01 ;soft key consistency flag
+ = &FF ;244  =0 => soft keys consistent
+
+PRNTSW # &01 ;PRINT destination flag
+PCEN * &01 ;print is (C)ENTRONICS
+PRS * &02 ;print is (RS)232
+PUSE * &03 ;print is (user) routine
+PNET * &04 ;print is ECO(NET)
+ = PCEN ;245
+; ******** DO NOT ALTER ********
+
+PIGNOR # &01 ;printer ignore character
+ = MLF ;246  support auto-linefeed printers by default
+; ******** DO NOT ALTER ********
+
+PPAGE2 * @-APAGE2
+
+BREAKI # &03 ;used for interception of BREAK
+ = ZERO ;247  change to $4C to intercept BREAK
+ = ZERO ;248
+ = ZERO ;249
+
+SPARE9 # &02 ;spare
+ = ZERO ;250
+ = ZERO ;251
+
+LROMID # &01 ;current language ROM id
+ = &FF ;252
+
+NPAGE2 * @-APAGE2
+
+TYPE # &01 ;restart type
+;= ZERO ;253
+
+MODELB # &01
+MODEL * MODELB
+;= ZERO ;254
+
+OPTION # &01 ;start up options
+;= ZERO ;255
+
+VBASE * @-&100
+VORG * VARS-VBASE
+ [ VARS-VBASE- 166=0
+ |
+ ! 0,"VARS error"
+ ]
+;
+
+DPAGE2 # &00
+
+VERTIC # &01 ;VDU vertical adjust
+
+;= ZERO
+
+INTERL # &01 ;interlace invert
+
+;= ZERO
+
+; time
+TIME1 # &05 ;first absolute time counter
+TIME * TIME1
+;= ZERO
+;= ZERO
+;= ZERO
+;= ZERO
+;= ZERO
+TIME2 # &05 ;second absolute time counter
+;= ZERO
+;= ZERO
+;= ZERO
+;= ZERO
+;= ZERO
+; N.B. soft restart zeroes from here onwards
+STPW # &05 ;stopwatch counter
+CPAGE2 * STPW
+;= ZERO
+;= ZERO
+;= ZERO
+;= ZERO
+;= ZERO
+
+ROMS # NROM
+
+;= ZERO (NROM times)
+
+; work slots used by CLI
+RDCTLO # &01 ;INKEY wait counter 1
+;= ZERO
+RDCTHI # &01 ;INKEY wait counter 2
+;= ZERO
+
+; work slots used by RDLN
+; values must not be altered by any sei-routine
+RDLNN # &01
+;= NULL
+RDLNLC # &01
+;= NULL
+RDLNHC # &01
+;= NULL
+
+; ADC control
+; may not be shared
+ADCLOV # NADC ;ADC lo byte values (0 to 3)
+;= ZERO
+;= ZERO
+;= ZERO
+;= ZERO
+ADCHIV # NADC ;ADC hi byte values (0 to 3)
+;= ZERO
+;= ZERO
+;= ZERO
+;= ZERO
+ADCFLG # &01
+;= ZERO
+
+; event interrupt vectors
+NEVENT * &000A ;total number of events
+EVENTS # NEVENT ;event flags
+EVMPTY * &00 ;output buffer empty
+;= ZERO
+EVFULL * &01 ;input buffer full
+;= ZERO
+EVKYBD * &02 ;keyboard interrupt
+;= ZERO
+EVADC * &03 ;ADC conversion complete
+;= ZERO
+EVVSYN * &04 ;VSYNC
+;= ZERO
+EVSWCH * &05 ;(timer) stopwatch
+;= ZERO
+EVESC * &06 ;escape detected
+;= ZERO
+EVRS * &07 ;RS423 Rx error
+;= ZERO
+EVUSER * &08 ;user allocated event
+;= ZERO
+
+; miscellaneous
+SOFKP # &01 ;pointer to soft key string
+;= NULL
+;
+FARCTR # &01 ;first auto-repeat count
+;= NULL
+
+KSCSTA # &03 ;keyboard scan start address work vector
+;= NULL
+
+; values to be initialised to $FF
+FFBYTE # &00
+;
+SSEMA # &01 ;sound semaphore
+;
+; buffer activity flags
+BACTIV # &00
+DUMMY # 3 ;Not used - necessary for padding (see PURGE)
+PFLAG # &01 ;print flag
+; 1xxx xxxx  =>  dormant
+; 0xxx xxxx  =>  busy
+SFLUSH # &04 ;sound flush flags
+SPSTAT # &01 ;speech processor status
+;
+; buffer control
+; buffer start page offsets
+BFSTRT # BUPB+&01
+; buffer end page offsets
+BFEND # BUPB+&01
+;
+CFSA # &03
+
+;
+CFSD # &01
+
+FBLOCK # &12 ;load/save control block
+FSTR * &0000 ;pointer to filename (2 bytes)
+FLOAD * &0002 ;load address (4 bytes)
+FEXEC * &0006 ;execute address (4 bytes)
+FFROM * &000A ;from address (4 bytes)
+FTO * &000E ;to address (4 bytes)
+;= 18*NULL
+
+ZPAGE2 # &00
+
+ LNK MOS34

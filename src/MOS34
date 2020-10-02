@@ -1,0 +1,624 @@
+
+; MOS34
+ TTL MOS34         Initialisation
+ OPT MOS34
+
+;(c) 1981 ACORN Computers Limited
+;BBC Microcomputer MOS
+
+;Change record:
+;100 15-Apr-82 PB     Use PCEN=1
+;039 15-Aug-81 PB     Start of change to PROTON interface
+;004 29-Jul-81 MP     Prototype version
+
+;Author(s):
+;PB     Paul Bond
+;MP     Mike Prees
+ TTL Entry point after hardware break/reset
+ OPT OPNEWP
+
+
+MRESET  ;entered here after reset
+
+; ensure NMIs are ignored as sson as possible
+;
+ LDAIM &40 ;A := RTI opcode
+ STA NMI
+
+; ensure interrupts disabled (useful for JMP -4 freaks)
+;
+ SEI
+
+; clear decimal mode
+;
+ CLD
+
+; reset stack
+;
+ LDXIM &FF
+ TXS
+
+; push hard reset status
+;
+ LDA IERQ
+ ASLA
+ PHA ;A=0 => hard,  A<>0 => soft
+ BEQ HRDRST ;[hard reset, A=0]
+;
+; prepare for possible soft reset
+;
+; check for critical region
+;
+ LDA CRIT
+ LSRA
+ CMPIM &01
+ BNE SFTRST ;[not within a critical region]
+; A=1
+ LSRA
+; A=0
+;
+; within a critical region - clear store
+;
+HRDRST  ;hard reset
+; A=0
+; hard reset
+; clear store
+ LDXIM &04 ;start clearing at page 4
+ STX &0001
+ STA &0000
+ TAY ;Y := 0
+; clear store to $00 (no blobs on screen)
+CLEAR
+ STAIY &0000
+ CMP &0001
+ BEQ CLEAR0 ;[16K RAM]
+ INY
+ BNE CLEAR
+; Y=0
+ INY
+; Y=1
+ INX
+ INC &0001
+ BPL CLEAR
+; 32K RAM
+;
+CLEAR0
+; $0001 = $80 (model B) or $40 (model A)
+ STX MODELB
+;
+; force soft keys reset
+ STX USKFLG ;USKFLG := non-zero
+;
+SFTRST
+;
+; initialise addressable latch outputs hi
+;
+ LDXIM &0F ;for latch driving
+ STX DDRBQ ;set PB3-PB0 as outputs to drive addressable latch
+;
+IALTCH
+ DEX
+ STX PBQ ;first store value = $0E,  last store value = $08
+ CPXIM &09
+ BCS IALTCH
+; fall thru when X=$08
+
+
+; check for hard restart
+;
+; read start-up options
+;
+ INX ;X := $09,  scan down from last start-up option
+;
+RDOPT1
+ TXA ;save X in A
+ JSR KC ;read state of matrix element addressed by X (A maintained)
+;
+; N.B. does not corrupt A
+;
+ CPXIM &80 ;C=0 => option open,  C=1 => option closed
+ ROR TEMPA ;rotate state of start-up option into TEMPA byte
+ TAX ;restore X
+ DEX
+ BNE RDOPT1 ;execute loop 9 times
+;
+; N.B. exits with X=0, SHIFT key has not been scanned
+; state of CTRL key has been rotated into TEMPA
+;
+ STX TYPE ;restart type := 0
+ ROL TEMPA ;C = state of CTRL key,  TEMPA = start-up options
+ JSR KBDIS ;disable keyboard (and resume hardware scan)
+;
+ RORA ;C=1 => CTRL pressed (KBDIS does PHP ... PLA)
+;
+ LDXIM CPAGE2 ;(do not set to reset timer if soft restart)
+ LDYIM NPAGE2 ;reset BREAKI if power up
+ PLA ;pull hard restart status
+ BEQ POWER ;[power up]
+;
+ LDYIM MPAGE2 ;prepare for BREAK
+ BCC SOFT ;[CTRL not pressed - force soft reset, b1b0(TYPE) := 0]
+;
+; b1b0(TYPE) := 2
+;
+ LDYIM PPAGE2 ;CTRL/BREAK
+ INC TYPE
+;
+POWER  ;power up, b1b0(TYPE) := 1
+;HARD  ;hard restart
+ INC TYPE
+;
+; initialise OPTION
+;
+ LDA TEMPA
+ EORIM &FF ;invert VDU mode selection
+ STA OPTION
+;
+ LDXIM DPAGE2 ;set to reset timer
+
+
+SOFT
+; initialise other page two locations to zero/$FF
+; N.B. X has been set to an appropriate value
+ LDAIM ZERO
+IP0SX
+ CPXIM FFBYTE
+ BCC Z0BYTE
+ LDAIM &FF
+Z0BYTE
+ STAAX &0200
+ INX
+ BNE IP0SX
+; N.B. A=$FF, X=0
+ STA DDRAR ;set all outputs on printer data direction register (6522B)
+
+
+; initialise page zero locations to zero
+;
+ TXA ;A := 0
+ LDXIM BPAGE0
+IP0SW
+ STAAX ZERO
+ INX
+ BNE IP0SW
+; X=0
+
+
+; initialise page two specific values
+;
+IP2SV
+ LDAAY IPAGE2 -&01
+ STAAY APAGE2 -&01
+ DEY
+ BNE IP2SV
+; Y=0
+
+
+; make old key space in case CFS auto-boot selected
+;
+ LDAIM &62
+ STA OKEY
+; X=0, Y=0
+
+
+; setup MC6850
+;
+ JSR MC6850 ;N.B. does not corrupt X or Y
+; X=0, Y=0
+
+
+; clear any 6522 interrupt status
+;
+ LDAIM &7F
+ INX ;X=1
+IFRIER  ;X=1 initialises IERQ&IERR,  X=0 initialises IFRQ&IFRR
+ STAAX IFRQ
+ STAAX IFRR
+ DEX
+ BPL IFRIER ;[execute loop once more with X=0]
+; X=$FF
+;
+ [ FALSE=0
+ STA IERQ
+ STA IERR
+ ]
+
+; TEMPA is now 0
+; if an interrupt occurs it will adopt the value $7F
+;
+; allow test equipment to interrupt if present
+;
+ CLI
+; ** TEST EQUIPMENT INTERRUPT MAY OCCUR HERE **
+ SEI
+;
+ BIT TEMPA
+ BVC NOTST1
+; C=0
+ JSR JMITST ;enter test routine (first call)
+NOTST1
+
+
+ [ FALSE=0
+; read diodes
+ CLV
+ LDXIM &0C
+; check diode 1
+ LDYIM &08
+ STX ROM
+ STY ROM
+ BVC ROM1
+ ORAIM &40
+ CLV
+ROM1
+; check diode 2
+ LDYIM &04
+ STX ROM
+ STY ROM
+ BVC ROM2
+ ORAIM &20
+ROM2
+ ]
+
+
+; initialise 6522s
+;
+ LDXIM &F2 ;enable TIMER1(clock,40), TIMER2(speech,20)
+; CB1(ADC,10), CA1(VSYNC,02) and NOT[CA2(keyboard,01)]
+ STX IERQ
+
+
+; initialise peripheral control register
+;
+ LDXIM &04
+ STX PCRQ ;select CA2 positive active edge
+
+
+; setup centisecond timer
+;
+ LDAIM &60 ;TIMER1 continuous, TIMER2 count pulses on PB6
+ STA ACRQ
+
+
+; N.B. ACRR zeroed by reset
+;
+; set timer hi-byte
+;
+ LDAIM &0E ;timer 1 period = 998 usec
+ STA TQLLQ
+ STA PCRR ;set CA2 hi (for printer)
+;
+; start conversion on analog/digital chip
+;
+ STA ADCCTL ;12 bits from chip channel 2
+
+
+; check whether 6522B present
+;
+ CMP PCRR
+ BEQ B6522E ;[6522B exists]
+;
+; 6522B does not exist
+;
+ INC B6522 ;B6522 := $00
+B6522E
+;
+; set timer lo-byte
+;
+ LDAIM &27
+ STA TQLHQ
+ STA TQCHQ
+
+
+; kill sound
+;
+ JSR SNDRST
+
+
+; ensure motor off
+; reinitialise serproc
+;
+ LDA SPREGA
+ ANDIM &7F
+ JSR STASP ;STA SPREGA, STA SERPRC
+; X, Y corrupted
+
+
+; conditionally reset soft keys
+; soft keys are reset
+; (a) after a hard reset
+; (b) if reset occurred during a critical update of the soft keys
+;
+ LDX USKFLG
+ BEQ SKOK
+ JSR RSOFT ;reset soft keys, sets X=0
+SKOK
+; X=0
+
+
+; compare ROMs
+;
+CRX
+ JSR STXROM ;select ROM
+;
+; check for copyright string
+;
+ LDXIM &03
+ LDY COPYRP
+CRCPYR
+ LDAAY LANG
+ CMPAX COPYR
+ BNE CRBAD
+ INY
+ DEX
+ BPL CRCPYR
+;
+; ROM has copyright string
+;
+ LDX ROMID
+ LDY ROMID
+CRY
+ INY
+ CPYIM NROM
+ BCS CRNX ;[Y > number of ROMs]
+ TYA
+ EORIM &FF
+ STA CRLO
+ LDAIM &7F ;N.B. this is LANG / - 1
+ STA CRHI
+CRLOOP
+ STY ROM ;select second (Y) ROM
+ LDAIY CRLO
+ STX ROM ;select first (X) ROM
+ CMPIY CRLO
+ BNE CRY ;[ROMs do not match]
+ INC CRLO
+ BNE CRLOOP
+ INC CRHI
+ LDA CRHI
+ CMPIM &84 ;compare only first 1K of ROMs
+ BCC CRLOOP
+; ROMs match
+CRBAD
+ LDX ROMID
+ BPL CRNX1 ;[ALWAYS jump]
+; NEVER fall thru
+;
+CRNX
+ LDA ROMTYP
+ STAAX ROMS ;store type of recognised ROM
+; check for BASIC ROM
+;***** N.B. WHITE BASIC MAY NEED 'ANDIM $FE' *****
+ ANDIM &8F
+ BNE CRNX1 ;[not a BASIC ROM]
+; BASIC ROM - remember ROM id for *BASIC command
+ STX BROMID
+CRNX1
+ INX
+ CPXIM NROM
+ BCC CRX ;[X a valid ROM number]
+; X=NROM
+;
+; if speech chip ready is still high then the chip has not been fitted
+;
+ BIT PBQ
+ BMI START1 ;[chip does not exist]
+; X=NROM
+; speech chip present
+;
+ DEC SPFLAG ;SPFLAG := $FF
+; X=NROM
+; reset speech processor
+;
+; write NROM * $FF (reset) to speech processor
+SPRST1
+ LDYIM SPOPRT
+ JSR WSPECH ;N.B. corrupts A and Y
+ DEX
+ BNE SPRST1
+; X=0
+;
+ STX TRCLQ
+ STX TRCHQ ;enable interrupt after one negative pulse on PB6 (speech int)
+START1
+
+
+ LDA OPTION ;initialise graphics mode from start-up options
+ JSR VDINIT ;initialise VDU module
+
+
+; set up reset soft key (fA)
+;
+ LDYIM BREKEY
+ JSR RDCHS ;set to expand softkeyA immediately
+; C=0 cos buffer empty
+;
+; let user intercept BREAK
+;
+; C=0
+ JSR BREAK
+;
+; initialise CFS state
+;
+ JSR INIT
+;
+; check for tube
+;
+ LDAIM &81
+ STA TREG0
+ LDA TREG0
+ RORA
+ BCC NOTUBE ;[tube not present]
+;
+; tube present
+;
+ LDXIM SVTUBE
+ JSR SVOP ;initialise tube
+ BNE NOTUBE ;[tube software not present]
+ DEC TUBEM ;TUBEM := $FF
+NOTUBE
+;
+; initialise service ROMs before writing to screen
+;
+ LDYIM /(OSHWM ) ;Y := default high water mark
+;
+ LDXIM SVSTAT ;offer static area
+ JSR SVOP
+;
+ LDXIM SVDYN ;offer dynamic area
+ JSR SVOP
+;
+ STY IHWM ;save adjusted high water mark
+ STY HWM ;save adjusted high water mark
+;
+; allow tube post-initialisation (e.g. exploding font)
+;
+ LDXIM SVTPIN ;******** ASSUMED = $FE ********
+ LDY TUBEM ;pass tube flag as argument
+ JSR SVOP
+; A=$00  (tube present)
+; A=$FF  (tube not present)
+;
+; conditionally output start-up message
+; 'BBC Computer'
+;
+ AND QUIET ;may be set by paged ROM
+ BPL ENTER ;[shshh ... you know who]
+;
+; output start up message
+;
+ LDYIM MSGBBC-&01
+ JSR WRSTR
+;
+; indicate model type
+;
+ LDA TYPE
+ BEQ Z ;[soft restart]
+;
+; hard restart
+; complete message
+;
+ LDYIM MSG32K-&01
+ BIT MODELB
+ BMI B ;[model B]
+;
+; model A
+;
+ LDYIM MSG16K-&01
+B
+ JSR WRSTR
+Z
+ LDYIM MSG2CR-&01
+ JSR WRSTR
+;
+ENTER  ;initialise TAPE/DISC
+;
+; let user intercept BREAK after filing system initialisation
+;
+ SEC
+ JSR BREAK
+;
+; service ROMs again
+; test for auto-boot condition (SHIFT and startup option bit3)
+;
+ JSR MOSTST ;test shift
+ PHP
+ PLA ;b7(A) => SHIFT pressed
+ LSRA
+ LSRA
+ LSRA
+ LSRA
+ EOR OPTION
+ ANDIM &08 ;use bit3
+ TAY ;Y=0 => auto-boot,  Y<>0 => do not auto-boot
+ LDXIM SVBOOT ;offer bootstrap
+ JSR SVOP
+ BEQ SLANG ;[file system booted]
+;
+; file system not booted - try to auto-boot from SEROM
+;
+ TYA
+ BNE NOAUTO ;[do not auto boot]
+;
+; auto-boot from SEROM
+;
+ LDAIM FXSROM
+ JSR CROM ;'*ROM'
+ LDXIM SLBOOT
+ LDYIM /(SLBOOT )
+ DEC QUIET ;flag as loading auto-boot program
+ JSR OSCLI ;'/!BOOT'
+ INC QUIET ;flag as not loading auto-boot program
+; if an error occurs whilst running the !BOOT program
+; then the MOS jumps to EBRK (early BRK)
+ BNE DNRFS ;[ALWAYS jump, do not reset filing system]
+;
+NOAUTO
+EBRK  ;unexpected (early) BRK (e.g. 'File not found')
+;
+; initialise cassette filing system (CFS)
+;
+ LDAIM ZERO ;select CFS
+ TAX ;X:=0, select default baudrate (1200 baud)
+ JSR TAPE12 ;initialise CFS
+;
+DNRFS  ;do not reset filing system
+;
+SLANG  ;select a language ROM to enter
+ LDA TYPE
+ BNE SLANG1 ;[hard restart - use same language as last time]
+;
+; soft restart - ensure language exists
+;
+ LDX LROMID
+ BPL ILR2 ;[language does exist]
+;
+SLANG1  ;find first language ROM
+;
+ LDXIM NROM-&1
+ILR1
+ LDAAX ROMS
+ ROLA
+ BMI ILR2 ;[found language ROM]
+;
+ DEX
+ BPL ILR1 ;[continue search for language ROM]
+;
+ LDAIM LGNONE
+ BIT TUBEM
+ BMI TLANG ;[tube active]
+; neither language nor tube present
+ BRK
+ = NOLROM
+ = "Language?"
+ = ZERO
+;
+ILR2
+ CLC ;indicate to tube that this is a restart
+SELANG  ;FX entry point, entered with C=1 (for tube)
+; found language ROM
+; select language ROM
+ PHP ;save entry type (present in C)
+ STX LROMID
+ JSR STXROM
+; output ROM message
+ LDAIM /(LANG )
+ LDYIM ROMMSG-&1
+ JSR WRSTRA
+; N.B. Y offset left pointing to copyright message
+ STY REPTR +&00
+ JSR OSNEWL
+ JSR OSNEWL
+;
+; enter language
+;
+ PLP ;restore entry type into C
+ LDAIM LGENTR ;entry reason
+ BIT TUBEM
+ BMI TLANG ;[tube active]
+ JMP ROMHRD ;ROM entry
+TLANG
+ JMP TBLANG ;tube entry
+
+
+ LNK MOS36

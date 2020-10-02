@@ -1,0 +1,541 @@
+
+ TTL VDU File - MOS05
+ OPT MOS05
+;
+;Last update 05/05/82
+
+;05/05/82  RSAN corrected
+;05/05/82  TADDRY changed to allow for only 1 table
+;01/05/82  Recoded using new variable order & manifests
+;01/05/82  Recode for new order of variables
+;22/04/82  Encode ADDSCN & SUBSCN
+;19/04/82  Comments added plus small byte squash
+;25/03/82  Change all refs. to BEGSCN+1 to BEGSCN
+
+;Account for scroll disabling if needs be
+;Requires c=1 if scroll DOWN (cursor up) & vice versa
+;If scroll enabled (b1 of STATS =0) adjusts PCSY unless on a margin
+;If scroll disabled, wraps cursor, pulls return address from stack
+;and jumps to CSDA.
+
+ENSCRL LDAIM &02 ;Is scroll disabled ?
+ BIT STATS
+ BNE ENSCRM ;Yes?, then skip
+ BVC ENSCRR ;Or is CE set ?
+ENSCRM LDA TWBROW ;Assume scroll up (so go to bottom row)
+ BCC ENSCRN ;Unless c=1
+ LDA TWTROW ;Whence scroll DOWN (& go to top row)
+ENSCRN BVS ENSCRO ;If OUTPUT cursor, skip
+ STA CSY ;(this assumes windows are rectangular!)
+ PLA  ;Cheat return stack
+ PLA
+ JMP CSDA
+ENSCRO PHP  ;To preserve carry
+ CMP PCSY  ;Would the input cursor like to go off screen ?
+ BEQ ENSCRP ;Yes?, then don't readdress it
+ PLP  ;Restore the carry, to see which way to go
+ BCC ENSCRQ
+ DEC PCSY ;Scroll DOWN, so follow it down
+ENSCRX RTS ;May be referenced from MOS04
+ENSCRQ INC PCSY ;Scroll UP, so go up as well
+ RTS
+
+;OCSRDL Delete output cursor
+
+OCSRDL PHP
+ PHA
+ LDY BYTCH
+ DEY  ;TTX?
+ BNE OCSRIV ;Not TTX?, then same as writing cursor, as it inverts
+ LDA TTXTMP ;TTX?, then write remebered byte
+ STAIY ZMEMT ;(Y)=0
+OCSREX PLA  ;& exit
+ENSCRP PLP  ;Get the stack correct
+ENSCRR RTS
+
+;OCSRWR Write output cursor
+
+OCSRWR PHP
+ PHA
+ LDY BYTCH
+ DEY  ;TTX?
+ BNE OCSRIV
+ LDAIY ZMEMT ;(Y)=0 Yes?, then read byte directly from screen
+ STA TTXTMP ;and store it out of harm's way (no plotting in this mode)
+ LDA CHCSR ;Write the cursor
+ STAIY ZMEMT ;(Y)=0
+ JMP OCSREX
+OCSRIV LDAIM &FF
+ CPYIM &1F ;Mode 2 ?
+ BNE OCSRIW
+ LDAIM INVSXT ;Yes?, then don't invert the flashing bit
+OCSRIW STA ZTEMP
+OCSRIU LDAIY ZMEMT ;Invert the character cell
+ EOR ZTEMP
+ STAIY ZMEMT
+ DEY
+ BPL OCSRIU
+ BMI OCSREX ; Branch always
+
+;Soft scrolling (non-anom.)
+
+;Scroll DOWN
+
+SSCRDN JSR SSCRIN ;Initialise
+ LDA TWBROW ;1st receive address is bottom LH point
+ STA CSY ;(CSX initialised in SSCRIN)
+ JSR TADDRY ;address bottom LH point (guaranteed in window)
+SSCRDA JSR SUBROW ;Get the address of the LH point of the next line up
+ BCS SSCRDB ;Wraparound between these two lines? NO, then continue
+ ADC BYTSCN ;Yes,then add screen and note we must scroll slowly!
+SSCRDB STA ZTEMP +&01 ;store transmit address
+ STX ZTEMP
+ STA ZTEMPB ;& MSB of next receive address (LSB is not changed)
+ BCS SSCRDE ;c unchanged since just after SSCRDA
+SSCRDC JSR SSCRS ;Scroll slowly !
+ JMP SSCRDD
+SSCRDE JSR SUBROW ;Get next line up
+ BCC SSCRDC ;Wraparound occured ?, then slow scroll to be safe
+ JSR XMIT ;Scroll fast is possible
+SSCRDD LDA ZTEMPB ;MSB of next receive address
+ LDX ZTEMP ;LSB of same
+ STA ZMEMT +&01 ;Initialise next receive address
+ STX ZMEMT
+ DEC ZTEMPC ;Any more lines to copy ?
+ BNE SSCRDA ;Don't bother to copy last line
+SSCREX LDXIM SSWS-V ;Preserve or restore current text cursor
+ LDYIM CSX-V
+SWAP2 LDAIM &02
+ BNE SWAP
+SWAPB LDXIM GCSIR-V ;SPLOTY requires c preserved
+SWAPC LDYIM OLDCS-V
+
+;SWAPF swaps 4 bytes between (V)+(X) & (V)+(Y)
+
+SWAPF LDAIM &04 ;by falling through to ...
+
+;SWAP swaps (A) bytes between (V)+(X) & (V)+(Y)
+
+SWAP STA ZTEMP
+SWAPA LDAAX V
+ PHA
+ LDAAY V
+ STAAX V
+ PLA
+ STAAY V
+ INX
+ INY
+ DEC ZTEMP
+ BNE SWAPA
+ RTS
+
+
+;Soft scroll UP
+
+SSCRUP JSR SSCRIN ;Initialise
+ LDY TWTROW ;Receive from top line, LH column
+ STY CSY
+ JSR TADDRY ;Get 1st receive address (point guaranteed in window)
+SSCRUA JSR ADDROW ;Get line below
+ BPL SSCRUE ;Wraparound ?
+ SEC ;Yes, then correct and scroll slowly
+ SBC BYTSCN
+SSCRUE STA ZTEMP +&01 ;Transmit address
+ STX ZTEMP
+ STA ZTEMPB ;MSB of next receive addr., LSB is preserved
+ BCC SSCRUB ;(c unchanged since just after SSCRUA)
+SSCRUC JSR SSCRS ;Scroll slowly
+ JMP SSCRUD
+SSCRUB JSR ADDROW ;Get next line down
+ BMI SSCRUC ;Wraparound ?, then scroll slowly to be safe
+ JSR XMIT ;No?, then we can scroll fast
+SSCRUD LDA ZTEMPB ;Load next receive address
+ LDX ZTEMP
+ STA ZMEMT +&01 ;and store it
+ STX ZMEMT
+ DEC ZTEMPC ;any more lines to copy ?
+ BNE SSCRUA ;don't bother with the last line
+ BEQ SSCREX ; Jump always
+
+;XMIT - Fast soft scroll
+;Copy PWWDTH bytes from (ZTEMP) to (ZMEMT)
+
+XMIT LDX PWWDTH +&01 ;How many pages?
+ BEQ XMITB ;None?, then attempt fractional
+ LDYIM &00
+XMITA LDAIY ZTEMP ;Inner loop - copy complete page
+ STAIY ZMEMT
+ INY
+ BNE XMITA
+ INC ZMEMT +&01 ;Prepare to copy next page
+ INC ZTEMP +&01
+ DEX  ;Any more complete pages to copy ?
+ BNE XMITA
+XMITB LDY PWWDTH ;Copy fractional page?
+ BEQ XMITD ;No?, then exit
+XMITC DEY
+ LDAIY ZTEMP ;Yes?, then do so
+ STAIY ZMEMT
+ TYA
+ BNE XMITC
+XMITD RTS  ;Referenced below
+
+;SSCRIN Soft scroll initialisation
+
+;(SSWS) := (CSX)(CSY)
+;(CSX) := (TWLCOL)
+;(ZTEMPC) := No. of rows to scroll, minus one
+
+SSCRIN JSR SSCREX ;Store current text cursor for future reference
+ SEC  ;Determine no. of rows to scroll
+ LDA TWBROW ;i.e. no. rows in window minus 1
+ SBC TWTROW
+ STA ZTEMPC
+ BNE SSCRIM
+ PLA  ;If zero lines to scroll, then cheat stack
+ PLA
+ JMP SSCREX ;& restore cursor
+
+SSCRIM LDA TWLCOL ;Put x cursor on LH margin
+ BPL CLTLND
+
+
+;SSCRS Slow soft scroll
+;Scrolls 1 row of characters, one by one from (ZTEMP) to (ZMEMT),
+;preserving the LSB of ZTEMP.
+;Requires that ZMEMT & ZTEMP be juxtaposed.
+;Checks for wraparound after each character is copied
+
+SSCRS LDA ZTEMP ;Push LSB of ZTEMP
+ PHA
+ SEC  ;Calc no. chars to copy -1
+ LDA TWRCOL
+ SBC TWLCOL
+ STA ZTEMPC +&01 ;No. of columns to be scrolled (for loop)
+SSCRSA LDY BYTCH
+ DEY
+SSCRSB LDAIY ZTEMP ;~~~ Copy 1 character ~~~
+ STAIY ZMEMT ;by copying (BYTCH) consecutive bytes
+ DEY
+ BPL SSCRSB
+ LDXIM &02 ;Now add BYTCH to ZMEMT & ZTEMP,
+SSCRSC CLC  ;checking for wraparound on both
+ LDAZX ZMEMT ;uses ZX mode, hence need for ZMEMT to be next to ZTEMP
+ ADC BYTCH
+ STAZX ZMEMT
+ LDAZX ZMEMT +&01
+ ADCIM &00
+ BPL SSCRSD ;Did wraparound occur?
+ SEC
+ SBC BYTSCN
+SSCRSD STAZX ZMEMT +&01
+ DEX
+ DEX
+ BEQ SSCRSC ;(Do ZMEMT)
+ DEC ZTEMPC +&01  ;Any more characters?
+ BPL SSCRSA
+ PLA  ;Restore LSB of ZMEMT
+ STA ZTEMP
+ RTS
+
+;Clear the line of text addressed by CSY
+;Preserve CSY & CSX
+
+CLTLIN LDA CSX ;Push the current X cursor position
+ PHA
+ JSR SSCRIM ;CSX = Left margin of window
+ JSR TADDRY ;Init. ZMEMT
+ SEC
+ LDA TWRCOL
+ SBC TWLCOL
+ STA ZTEMPB ;Column count
+CLTLNA LDA BTCOLF ;get colour
+ LDY BYTCH ;Bytes / character
+CLTNB DEY  ;Inner loop - clear one character cell
+ STAIY ZMEMT ;(preserves z from previous DEY)
+ BNE CLTNB ;1 char cell
+ TXA  ;Update ZMEMT
+ CLC
+ ADC BYTCH
+ TAX
+ LDA ZMEMT +&01
+ ADCIM &00
+ BPL CLNLC ;Wraparound ?
+ SEC ;Yes, then subtract off the number of bytes per screen
+ SBC BYTSCN
+CLNLC STX ZMEMT
+ STA ZMEMT +&01
+ DEC ZTEMPB ;One less character to clear
+ BPL CLTLNA ;Any more?
+ PLA
+CLTLND STA CSX
+FAIL SEC
+ RTS
+
+;Addresses CSX,CSY to memory locn. on screen.
+;Checks that CSX & CSY are in window
+;Returns with no action and c=1 if outside.
+;If OK, initialises ZMEMT and CSPOSN
+;Exits with cursor address in (AX)
+;For cursor display, follow immediately with
+;JSR CSDSP
+
+TADDR LDX CSX ;Check window of CSX
+ CPX TWLCOL ;Lower than LH margin ?
+ BMI FAIL
+ CPX TWRCOL ;Higher than RH edge ?
+ BEQ TADDRX
+ BPL FAIL
+TADDRX LDX CSY ;Check CSY
+ CPX TWTROW
+ BMI FAIL
+ CPX TWBROW
+ BEQ TADDRY
+ BPL FAIL
+
+;End of windowing, now calc. memory posn.
+;As TADDR with no bounds checking
+;Returns carry clear
+
+TADDRY LDA CSY ;Twice row no. to Y
+ ASLA
+ TAY  ;(c=0 at this point)
+ LDAIY ZTBL ;MSB
+ STA ZMEMT+&01
+ INY
+ LDAIM &02
+ AND MEMODE ;Non-zero if table offset is to be halved
+ PHP
+ LDAIY ZTBL ;LSB
+ PLP
+ BEQ TADDRH
+ LSR ZMEMT+&01
+ RORA
+TADDRH ADC TOPSCN ;c=0 Add LSB
+ STA ZMEMT
+ LDA ZMEMT+&01 ;Add MSB
+ ADC TOPSCN+&01
+ TAY  ;Xfr MSB to Y
+;Mpy. CSX by BYTCH
+ LDA CSX
+ LDX BYTCH ;Is it TTX ?
+ DEX
+ BEQ TADDRE ;Skip mult. if TTX
+ CPXIM &0F ;4 colour (16 bytes) ?
+ BEQ TADDRF
+ BCC TADDRG ;Less ? Then 2 colour
+ ASLA  ;Must have been 16 colour
+TADDRF ASLA  ;4 colour
+TADDRG ASLA  ;2 colour
+ ASLA
+ BCC TADDRB
+ INY  ;c=1?, then inc. MSB by 2
+ INY
+TADDRB ASLA
+ BCC TADDRC
+ INY  ;c=1, then inc. MSB by 1
+TADDRE CLC
+TADDRC ADC ZMEMT ;(c=0), add LSB of row offset
+ STA ZMEMT
+ STA CSPOSN
+ TAX ;LSB is returned by this routine in X
+ TYA  ;MSB to A
+ ADCIM &00
+ STA CSPOSN +&01 ;Store to cursor before wraparound
+ BPL TADDRD ;Wraparound ?
+ SEC ;Yes, then subt. scn.
+ SBC BYTSCN
+TADDRD STA ZMEMT +&01 ;Store physical address to ZMEMT
+ CLC  ;indicate successful addressing
+ RTS
+
+;PRINT CHARACTER TO VDU
+
+
+
+
+;ANOMALOUS PRINTING
+
+PRANM LDX FGCOLF ;Printing to be in foreground graphics colour
+ LDY GPLFMD ;In the current foreground colour mode
+PRANC JSR SETZG ;Initialise ZGORA & ZGEOR
+
+;The graphics cursor is copied to 2 locations, APCS1
+;and APCS2 . The latter is left untouched until the end of the printing,
+;when it is restored to the GCSIY. The former is copied to the GCSIY
+;after every column of pixels is printed, with the X cursor incremented
+;each time.
+
+ JSR COPYFA ;Copy GCSIY to APCS2 ...
+ LDYIM &00 ;Initialise row counter
+PRANMC STY ZTEMPB
+ LDY ZTEMPB
+ LDAIY ZTEMPC ;Anything to do ?
+ BEQ PRANMG ;No, then skip
+ STA ZTEMPB +&01
+PRANMA BPL PRANMD
+ JSR WPLOTA ;Yes, then plot if inside window
+PRANMD INC GCSIX ;Increment X cursor
+ BNE PRANME
+ INC GCSIX +&01
+PRANME ASL ZTEMPB +&01
+ BNE PRANMA
+PRANMG LDXIM APCS1-V ;Restore previous x cursor
+ LDYIM GCSIR-V
+ JSR COPY2
+ LDY GCSIY ;Decrement Igraphics Y cursor
+ BNE PRANMF
+ DEC GCSIY +&01
+PRANMF DEC GCSIY
+ LDY ZTEMPB ;Do next row
+ INY
+ CPYIM &08
+ BNE PRANMC
+ LDXIM APCS1 ;Finished, so restore grpahics cursor
+ LDYIM GCSIR-V
+ JMP COPYF ; (branch always taken)
+
+;RSAN Anomalous cursor home
+
+RSAN LDXIM GWTROW-V ;Copy GWLCOL to GCSIR
+ LDYIM GCSIY-V
+ JSR COPY2 ;Copy 4 bytes of RAM saves 2 bytes of ROM
+
+;& fall through to ...
+
+
+;CRAN Anomalous carriage return
+
+CRAN LDXIM GWLCOL-V ;Copy GWLCOL to GCSIX
+ LDYIM GCSIX-V
+ JSR COPY2
+ JMP IEG
+
+;NON-ANOMALOUS
+
+;Character to be printed in (A)
+
+;Set up address of bytes to be
+;copied from soft font. Result
+;to ZTEMP
+
+VDUPR LDX NCOLOR ;TTX?
+ BEQ PTTX
+ JSR CHADDR ;Point (ZTEMPC) to character in soft font
+VDUPRB LDX NCOLOR ;Because CHADDR now destroys (X)
+ LDA STATS ;Is this anomalous printing ?
+ ANDIM &20
+ BNE PRANM ;Anom. printing
+
+;Now select the mode
+
+ LDYIM &07 ;No. rows (except TTX)
+ CPXIM &03
+ BEQ PFOUR ;4 colour mode ?
+ BCS PSXTN ;16 colour mode ?
+
+;TWO colour mode
+
+PTWO LDAIY ZTEMPC
+ ORA ZORA
+ EOR ZEOR
+ STAIY ZMEMT
+ DEY
+ BPL PTWO
+ RTS
+
+;TELETEXT mode
+
+PTTX LDYIM &02 ;Transform these three wretched characters again
+PTTXA CMPAY TTXTB
+ BEQ PTTXC
+ DEY
+ BPL PTTXA
+PTTXB STAIX ZMEMT ;as (X)=0
+ RTS
+PTTXC LDAAY TTXTB +&01 ;Cheat as $23->$5F->$60->$23
+ BNE PTTXB ;(branch always taken)
+
+;FOUR colour mode
+
+PFOUR LDAIY ZTEMPC ;Get bit pattern
+ PHA  ;Push for L.S.Nybble
+ LSRA
+ LSRA
+ LSRA
+ LSRA
+ TAX
+ LDAAX BPFTB ;Get expanded patten
+ ORA ZORA ;of M.S.Nybble
+ EOR ZEOR
+ STAIY ZMEMT
+ TYA
+ CLC
+ ADCIM &08 ;Access next char. cell
+ TAY
+ PLA  ;Get L.S.Nybble
+ ANDIM &0F
+ TAX
+ LDAAX BPFTB
+ ORA ZORA
+ EOR ZEOR
+ STAIY ZMEMT
+ TYA
+ SBCIM &08 ;c=0, thus subt. 9
+ TAY
+ BPL PFOUR
+PSXTC RTS  ;Also used by PSXTN
+
+;SIXTEEN colour mode
+
+PSXTB TYA  ;Ref.the 1st cell again
+ SBCIM &21 ;As c=1
+ BMI PSXTC ;Finished ?
+ TAY  ;No, then carry on ..
+
+PSXTN LDAIY ZTEMPC ;Get bit pattern
+ STA ZTEMPB ;For Rotate lefts
+ SEC  ;Marker bit,=1 1st time only
+PSXTA LDAIM &00
+ ROL ZTEMPB ;ROL to include marker
+ BEQ PSXTB ;Finished ?
+ ROLA
+ ASL ZTEMPB
+ ROLA  ;c=0 here, (A)=next 2 bits
+ TAX  ;Get expanded bit pattern
+ LDAAX BPSTB
+ ORA ZORA
+ EOR ZEOR
+ STAIY ZMEMT
+ CLC
+ TYA  ;Access next char. cell
+ ADCIM &08 ;c=0 before & after
+ TAY
+ BCC PSXTA ;(branch always taken)
+
+;Addresses character in soft font.
+;Takes (ascii) value in A, multiplies by 8, adds appropriate font address
+;(assumed to be on page boudary), and puts result to ZTEMPC.
+;This addresses top row of character, subsequent rows being in the
+;following 7 bytes.
+
+CHADDR ASLA  ;ZTEMPC:=8*CHAR. + MSB of font
+ ROLA
+ ROLA
+ STA ZTEMPC ;Store LSB of addr. with bits 0-2 the low bits of the high addr.
+ ANDIM &03 ;Get page number of character
+ ROLA
+ TAX
+ ANDIM &03
+ ADCIM HFMSB ;MSB of hard font - overwrite if soft font (c=0 from last ROLA)
+ TAY
+ LDAAX BITTBL ;Which bit in the flag byte is to be tested
+ BIT FNTFLG ;Test to see if soft or hard font
+ BEQ CHADDS ;Clear, thus hard font
+ LDYAX PGSFNT -&01 ;Load soft font page number
+CHADDS STY ZTEMPC +&01 ;Store MSByte
+ LDA ZTEMPC
+ ANDIM &F8 ;LSB of address
+ STA ZTEMPC
+ RTS
+ LNK MOS06

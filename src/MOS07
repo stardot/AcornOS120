@@ -1,0 +1,302 @@
+ TTL VDU File - MOS07
+ OPT MOS07
+
+;Last revision 01/05/82
+
+;01/05/82  Recoded to allow for new order of variables & manifests
+;21/04/82  LINE rewritten
+;19/04/82  One byte saved in SB
+;25/03/82  Change all refs. to BEGSCN+1 to BEGSCN
+;14/11/81  Variable mark space on DOTS removed
+
+;******* PLOTTING *******
+
+;LINE plots straight line from cursor to new point
+;taking account windowing, & plotting partial lines
+;if necessary
+
+;Requires GCSIR = the current cursor position (I co-ords)
+;NEWPT = the point to plotted to (I co-ords)
+;Windowing is assumed of neither
+
+
+;Plot a straight line
+
+LINE JSR LINSA ;Find DeltaX & DeltaY to LDELTA
+;LINSB Returns n=1 iff MOD DeltaX < MOD DeltaY
+;Encoded version of a previous routine
+
+ LDA LDELTA+&03 ;DY, MSB Are the deltas of the same sign?
+ EOR LDELTA+&01 ;DX, MSB
+ BMI LINSBA
+ LDA LDELTA+&02 ;YES, then compare DeltaY - DeltaX
+ CMP LDELTA
+ LDA LDELTA+&03
+ SBC LDELTA+&01
+ JMP LINSBB
+LINSBA LDA LDELTA ;NO, then add
+ CLC
+ ADC LDELTA+&02
+ LDA LDELTA+&01
+ ADC LDELTA+&03
+LINSBB RORA  ;c to b7 of A
+ LDXIM &00
+ EOR LDELTA+&03 ;If DY < 0, then invert b7 of A. Sets n as required
+;
+ BPL LINEA
+ LDXIM &02
+LINEA STX ZTEMPC ;0 if p.b.X, 2 if p.b.Y
+ LDAAX D1JTB ;JVEC initialisation (D1 jump vector)
+ STA JVEC
+ LDAAX D1JTB+&01
+ STA JVEC+&01
+ LDAAX LDELTA+&01 ;Sign of D1
+ BPL LINEB
+ LDXIM GCSIR-V ;+ve, then LSTART from GCSIR...
+ BNE LINEC ;(branch always taken)
+LINEB LDXIM NEWPT-V ;Copy LSTART from new point
+LINEC STX ZTEMPC+&01 ;Offset of LSTART (=PStart of old)
+ LDYIM LSTART-V ;Copy to LSTART
+ JSR COPYF
+ LDA ZTEMPC+&01 ;Get Horizontal co-ordinate of other (end) point
+ EORIM &04 ;This requires NEWPT to be multiple of 8 & GCSIR 4 above it
+ STA ZTEMPB+&01
+ ORA ZTEMPC ;Get Hend (horizontal co-ordinate of endpoint)
+ TAX
+ JSR COPY2H
+ LDA PLMODE ;Initialise dotted line test
+ ANDIM &10 ;Isolate b4
+ ASLA
+ ASLA
+ ASLA ;now $80 if plot dotted line, $00 if full line
+ STA ZTEMP+&01
+ LDXIM LSTART-V ;Window start point LSTART
+ JSR WIND
+ STA ZTEMPB
+ BEQ LINED
+ LDAIM &40 ;Start point not inside, so slow plot
+ ORA ZTEMP+&01
+ STA ZTEMP+&01
+LINED LDX ZTEMPB+&01 ;Window other point
+ JSR WIND
+ BIT ZTEMPB ;Anything to do ?
+ BEQ LINEE
+ RTS ;No, then exit
+LINEE LDX ZTEMPC ;Isolate 2nd horizontal window
+ BEQ LINEF
+ LSRA
+ LSRA
+LINEF ANDIM &02
+ BEQ LINEG ;Zero, so Hend is in window
+ TXA ;Point X to upper margin!
+ ORAIM GWRCOL-V ;Assumes GWLCOL-V is a multiple of 4
+ TAX ;Endpoint outside horizontal window,
+ JSR COPY2H ;so alter Hend to high margin
+LINEG JSR LINSG ;Get L values & MOD deltas
+ LDA ZTEMPC
+ EORIM &02
+ TAX ;Unsigned D2
+ TAY
+ LDA LDELTA+&01 ;Sign of D2 ?
+ EOR LDELTA+&03
+ BPL LINEH
+ INX ;Signed D2 - E,W,N,S
+LINEH LDAAX D2JTBL ;Initialise D2 jump vector
+ STA D2JVEC
+ LDAAX D2JTBH
+ STA D2JVEC+&01
+ LDAIM &7F ;dotted line initialisation
+ STA DOTFLG
+ BIT ZTEMP+&01
+ BVS LINEI ;Slow plot , so set ZTEMPC strangely
+ LDAAX EWTBA ;(4,0,6,2) Calculate V points
+ TAX
+ SEC
+ LDAAX GWLCOL
+ SBCAY LSTART
+ STA ZTEMP
+ LDAAX GWLCOL+&01
+ SBCAY LSTART+&01
+ LDY ZTEMP
+ TAX ;Ensure +ve
+ BPL LINEH1
+ JSR NEGAY
+LINEH1 TAX ;MSB of no. V points
+ INY ;Increment this no.
+ BNE LINEH2
+ INX
+LINEH2 TXA ;MSB non-zero ?
+ BEQ LINEH3
+ LDYIM &00 ;Yes, then no limit to no. of vertical points
+LINEH3 STY ZTEMPC+&01 ; Zero is always set here
+ BEQ LINEJ1
+LINEI TXA ;b7 = sign of D2. b1=D2
+ LSRA
+ RORA
+ ORAIM &02
+ EOR ZTEMPC
+ STA ZTEMPC
+LINEJ1 LDXIM LSTART-V ;Address the first point
+ JSR GADDR ;Now loads YLINE to Y
+ LDX ZTEMPB
+ BNE LINEN
+ DEC ZTEMPB+&01
+LINEN DEX
+;
+; Fall through to main plot routine
+;
+LINEJ LDA ZTEMP +&01 ;Was midpoint or DOTS referenced ?
+ BEQ DOTYES ;No?, then run along
+ BPL MPTEST ;No, then do midpoint test
+ BIT DOTFLG ;b7 set, then dotted
+ BPL DOTY ;Branch if last was a space
+ DEC DOTFLG ;now to $7F
+ BNE DOTNO ;(branch always taken)
+DOTY INC DOTFLG ;to $80
+ ASLA
+ BPL DOTYES ;No?, then plot the point
+MPTEST STX ZTEMPB ;Store X temporarily
+ LDXIM LSTART-V ;Window the point at Q +0D (PStart)
+ JSR GADDV ;& address if window was successful
+ LDX ZTEMPB ;Restore X
+ ORAIM &00 ;To TSTA (a la 6800) (result of window)
+ BNE DOTNO ;Outside?, then skip the plot
+DOTYES LDA ZMASK ;Plot the point
+ AND ZGORA
+ ORAIY ZMEMG
+ STA ZTEMP
+ LDA ZGEOR
+ AND ZMASK
+ EOR ZTEMP
+ STAIY ZMEMG
+
+;L := L - DeltaV
+
+DOTNO SEC
+ LDA LPARMS ;L,LSB
+ SBC LPARMS+&02 ;DeltaV,LSB
+ STA LPARMS
+ LDA LPARMS+&01 ;L,MSB
+ SBC LPARMS+&03 ;DeltaV,MSB
+ BCS LINED1 ;Skip if D2 not to be taken ( L > 0 )
+ STA ZTEMP ;D2 must be taken, thus
+ LDA LPARMS ;L := L + DeltaH
+ ADC LPARMS+&04 ;LSB of DeltaH (c=0)
+ STA LPARMS
+ LDA ZTEMP
+ ADC LPARMS+&05 ;MSB of DeltaH
+ CLC ;Do do D2
+LINED1 STA LPARMS+&01 ;Store MSB of L, preserving c
+ PHP  ;Needed for decrementing no. of V points
+ BCS LINEE1 ;Don't do D2 if you're not meant to
+ JMI D2JVEC ;Jump to D2, through JVEC2, to xB (below)
+NB DEY
+ BPL LINEE1            ;~~~~~~~~~~~~~~ D2 KING MOVES ~~~~~~~~~~~~~~
+ JSR NBDY
+LINEE1 JMI JVEC
+SB INY
+ CPYIM &08
+ BNE LINEE1
+ CLC ; encoded version of SBDY
+ LDA ZMEMG
+ ADC BYTROW
+ STA ZMEMG
+ LDA ZMEMG +&01
+ ADC BYTROW +&01
+ BPL SBDYA
+ SEC
+ SBC BYTSCN
+SBDYA STA ZMEMG +&01
+ LDYIM &00
+ JMI JVEC
+EB LSR ZMASK
+ BCC LINEE1
+ JSR EBDY
+ JMI JVEC
+WB ASL ZMASK
+ BCC LINEE1
+ JSR WBDY
+ JMI JVEC
+NA DEY
+ BPL LINEF1            ;~~~~~~~~~~~~~~ D1 KING MOVES ~~~~~~~~~~~~~~
+ JSR NBDY
+ BNE LINEF1 ; NBDY returns Zero false
+EA LSR ZMASK
+ BCC LINEF1
+ JSR EBDY
+LINEF1 PLP  ;Did D2 occur ? Result to c (c=0 if it did)
+ INX  ;Inc no. H points left to plot (following preserves c)
+ BNE LINEG1
+ INC ZTEMPB +&01
+ BEQ LINEX ;Zero?, then exit
+LINEG1 BIT ZTEMP +&01 ;Was midpoint referenced? (preserves c)
+ BVS FRIGA ;Yes, then go to the nasty bit
+ BCS LINEK ;D2 ?, then test V window. c from last PLP
+ DEC ZTEMPC +&01 ;Off V window ?, then exit
+ BNE LINEK
+LINEX RTS
+FRIGA LDA ZTEMPC ;Which direction was D2 ?
+ STX ZTEMPB
+ ANDIM &02
+ TAX
+ BCS FRIGC ;No D2?, then skip the adjustment of V
+ BIT ZTEMPC ;Was D2 +ve ?
+ BMI FRIGB
+ INCAX LSTART ;D2 +ve, so increment V co-ord
+ BNE FRIGC
+ INCAX LSTART+&01
+ BCC FRIGC ;(branch always taken)
+FRIGB LDAAX LSTART ;D2 -ve, so dec. the V co-ord.
+ BNE FRIGF
+ DECAX LSTART+&01
+FRIGF DECAX LSTART
+FRIGC TXA  ;Get offset of D1
+ EORIM &02
+ TAX
+ INCAX LSTART ;D1 +ve,so inc. H co-ord
+ BNE FRIGD
+ INCAX LSTART+&01
+FRIGD LDX ZTEMPB
+LINEK JMP LINEJ
+
+;BOUNDARY ROUTINES
+
+;NORTH
+
+; Returns zero false
+NBDY SEC
+ LDA ZMEMG
+ SBC BYTROW
+ STA ZMEMG
+ LDA ZMEMG +&01
+ SBC BYTROW +&01
+ CMP BEGSCN ;Wraparound ?
+ BCS NBDYA
+ ADC BYTSCN
+NBDYA STA ZMEMG +&01
+ LDYIM &07
+ RTS
+
+;EAST
+
+EBDY LDA MASKL
+ STA ZMASK
+ LDA ZMEMG
+ ADCIM &07 ;c=1 from branch not taken to call this
+ STA ZMEMG
+ BCC EBDYA
+ INC ZMEMG +&01
+EBDYA RTS
+
+;WEST
+
+WBDY LDA MASKR ;encoded version of WBDY
+ STA ZMASK
+ LDA ZMEMG
+ BNE WBDYA
+ DEC ZMEMG +&01
+WBDYA SBCIM &08 ;c=1 from failure of BCC
+ STA ZMEMG
+ RTS
+
+ LNK MOS08

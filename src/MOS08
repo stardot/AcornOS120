@@ -1,0 +1,335 @@
+
+ TTL VDU File - MOS08
+ OPT MOS08
+
+;Last revision 18/05/82
+;
+;18/05/82  External graphics cursor now updated on exit of SPLOT
+;04/05/82  SPLOT routine entered
+;01/05/82  Recoded using new variable order & manifests
+;21/04/82  Most of this deleted ! LINSG modified for new LINE routine
+;19/04/82  Byte saving in LINSCE
+
+;LINSA calculates Delta X & Delta Y
+;(New point - cursor), where both are in Ico-ords
+;Max. I value always assumed to be $8000, as arithmetic
+;is performed in 2's comp., 16 bit
+;New point in NEWPT, results to LDELTA
+
+LINSA LDYIM LDELTA-V ;Offset of results from V
+ LDXIM NEWPT-V ;Offset of operands, from V
+
+;fall through to .......
+
+;TRISA calculates Delta X & Delta Y for operands starting
+;at V+(X), and results to V+(Y). Calculation from
+;(Point at (V+(X)+4)) - (Point at (V+(X)))
+
+TRISA JSR TRISAA
+ INX
+ INX
+ INY
+ INY
+TRISAA SEC
+ LDAAX V+&04
+ SBCAX V
+ STAAY V
+ LDAAX V+&05
+ SBCAX V+&01
+ STAAY V+&01
+ RTS
+
+;LINSG calculates no. H points before H exit
+;putting 2's comp. to ZTEMPB,ZTEMPB +01 (LSB 1st).
+;Initialises MOD DELTAs & L
+;Requires ZTEMPB as usual, destroying original data
+
+LINSG LDA ZTEMPC ;Calc. MOD DELTAs.
+ BNE LINSGB ;Plot by Y, so straight copy
+ LDXIM LDELTA-V ;Swap DeltaX & DeltaY
+ LDYIM LDELTA+&02-V
+ JSR SWAP2
+LINSGB LDXIM LDELTA-V ;Copy from modified DX & DY (now DH & DV)
+ LDYIM LPARMS+&02-V ;to LPARMS+2=LDELTA
+ JSR COPYF ;Copy 4 bytes
+
+;Initialise No. H points
+
+ SEC
+ LDX ZTEMPC
+ LDA HEND ;He, LSB
+ SBCAX LSTART ;HSt, LSB
+ TAY
+ LDA HEND+&01 ;He, MSB
+ SBCAX LSTART+&01 ;HSt, MSB
+ BMI LINSGA ;Ensure in 2's comp.
+ JSR NEGAY
+LINSGA STA ZTEMPB +&01
+ STY ZTEMPB
+
+;now initialise L & MODULO the DH & DV
+
+ LDXIM LPARMS-V ;Point to the deltas
+
+;& fall through to ...
+
+;TRISB Set up L & MODULO deltas.
+;Assumes V+(X) points to LL,LH,DVL,DVH,DHL,DHH
+;Sets all Dxy to ABS in situ. Sets L := DH/2 (2 byte arith)
+
+TRISB JSR TRISBA ;Do DH
+ LSRA
+ STAAX V+&01 ;Initialise LH
+ TYA  ;Now do LL
+ RORA
+ STAAX V
+ DEX  ;Now DV
+ DEX
+TRISBA LDYAX V+&04 ;LSB
+ LDAAX V+&05 ;MSB
+ BPL TRISBB ;Find ABS value
+ JSR NEGAY
+ STAAX V+&05 ;PAIN - why the hell isn't there a STYAX on this wretched chip ??
+ PHA
+ TYA
+ STAAX V+&04
+ PLA
+TRISBB RTS
+
+
+;COPYF copies 4 bytes from (V)+(X) to (V)+(Y)
+
+COPY8 LDAIM &08
+ BNE COPY
+
+COPY2H LDYIM HEND-V
+COPY2 LDAIM &02
+ BNE COPY
+
+COPYFA LDYIM APCS1-V
+COPYFB LDXIM GCSIR-V
+COPYF LDAIM &04 ;SPLOTY requires that c preserved
+COPY STA ZTEMP
+COPYA LDAAX V
+ STAAY V
+ INX
+ INY
+ DEC ZTEMP
+ BNE COPYA
+ RTS
+
+NEGAY PHA  ;Negate (AY) - push MSB
+ TYA
+ EORIM &FF
+ TAY
+ PLA
+ EORIM &FF
+ INY
+ BNE NEGAYA
+ CLC
+ ADCIM &01
+NEGAYA RTS
+
+SPF JSR GADDW ;Address new point COMMON CODE
+ BNE SPFA ;Off window?, then exit
+ LDAIY ZMEMG ;Get the current byte
+ EOR BGCOLF ;Set b/g pixels to zero
+ STA ZTEMP
+ RTS
+SPFA PLA
+ PLA
+
+; & fall through to 
+
+SPLOTY INC GCSIY ;Failed, so make the L.H. cursor > R.H.
+ JMP SPLOTX
+
+;SPLOT plots from the new point left & right
+; until it finds a pixel which is NOT background colour
+; It scans a byte at a time if possible, taking a lot
+; of code.
+
+
+SPLOT JSR SPF
+ AND ZMASK ;Is the new point in b/g?
+ BNE SPLOTY ;No?, then exit
+ LDXIM &00 ;Set up for plotting to the left
+ JSR SPS ;Corrupts all registers
+ BEQ SPLOTE ;Nothing to do
+ LDY YLINE
+ ASL ZMASK ;Don't want to plot the midpoint again
+ BCS SPLOTB ;So move left
+ JSR SPB ;Plot the LH fractional byte
+ BCC SPLOTE ;No complete bytes to attempt?
+
+SPLOTB JSR WBDY ;Do complete bytes left
+ LDAIY ZMEMG ;(NB WBDY assumes c=1)
+ EOR BGCOLF
+ STA ZTEMP
+ BNE SPLOTD ;Not a complete byte of b/g?
+ SEC ;Go for next byte - add to pixel counter
+ TXA
+ ADC NPIX
+ BCC SPLOTC
+ INC ZTEMP+&01 ;MSB of pixel counter
+ BPL SPLOTD ;Reached margin? Then skip
+SPLOTC TAX ;Not reached margin - then
+ JSR PLOTFF
+ SEC ;carry on
+ BCS SPLOTB ;(branch always taken). Sorry about the last comment
+
+SPLOTD JSR SPB ;Do whatever is right of the line
+SPLOTE LDYIM &00 ;Translate back to Ico-ords
+ JSR SPU
+
+ LDYIM NEWPT-V ;Entry point for look for b/g colour
+ LDXIM GCSIR-V ;Swap newpoint (in GCSIR) & calculated RH endpoint
+ JSR SWAPF
+
+SCHEAT JSR SPF ;Address midpoint again held in NEWPT
+ LDXIM &04 ;Set up for plotting right
+ JSR SPS ;Musn't corrupt ZTEMP
+ TXA ;Plot the midpoint
+ BNE SPLOTA
+ DEC ZTEMP+&01
+SPLOTA DEX
+
+SPLOTL JSR SPA ;Do this RH fractional byte
+ BCC SPLOTK ;No full bytes to attempt?
+
+SPLOTI JSR EBDY ;Full bytes right
+ LDAIY ZMEMG
+ EOR BGCOLF
+ STA ZTEMP
+
+ LDA ZTEMPB
+ BNE SPLOTL
+
+ LDA ZTEMP
+ BNE SPLOTJ ;This isn't a full byte
+ SEC ;Add (NPIX)+1=no.pixels to counter
+ TXA
+ ADC NPIX
+ BCC SPLOTF
+ INC ZTEMP+&01
+ BPL SPLOTJ ;Skip if hit margin
+SPLOTF TAX
+ JSR PLOTFF
+ SEC
+ BCS SPLOTI ;(branch always taken)
+
+SPLOTJ JSR SPA
+SPLOTK LDYIM &04 ;Convert to address of LH endpoint
+ JSR SPU
+SPLOTX JSR EMAEX ;Finished
+ JMP IEG ;update external cursor
+
+;SPA Plots fractional LH byte on RH line end
+
+SPA LDA ZMASK ;Push the initial combined mask
+ PHA
+ CLC
+ BCC SPAF ;(branch always taken)
+
+SPAA PLA ;Try next pixel - pull combined mask
+ INX ;Increment the pixel counter
+ BNE SPAB
+ INC ZTEMP+&01
+ BPL SPAE ;Exit if all pixels plotted
+SPAB LSR ZMASK ;Shift mask
+ BCS SPAE ;Exit if shifted out of character cell
+ ORA ZMASK ;Continue forming combined mask
+ PHA ;& push it again
+SPAF LDA ZMASK ;START HERE
+ BIT ZTEMP ;Is this pixel b/g colour ?
+
+ PHP ;Invert z flag if needs be
+ PLA
+ EOR ZTEMPB ;By inverting it with ZTEMPB (0 or 2)
+ PHA
+ PLP
+
+ BEQ SPAA ;Try next pixel if you haven't found what you're looking for
+ PLA ;Found it?, then pull combined mask
+ EOR ZMASK ;& delete this pixel from it
+SPAE STA ZMASK ;These must preserve c!
+ JMP PLOT
+
+;SPB Plots fractional RH byte on LH line end
+
+SPB LDAIM &00
+ CLC
+ BCC SPBF ;(branch always taken)
+
+SPBA INX
+ BNE SPBB
+ INC ZTEMP+&01
+ BPL SPAE
+SPBB ASLA
+ BCS SPBC
+SPBF ORA ZMASK
+ BIT ZTEMP
+ BEQ SPBA
+ EOR ZMASK
+ LSRA
+ BCC SPAE ;(branch always taken)
+
+SPBC RORA
+ SEC
+ BCS SPAE ;(branch always taken)
+
+;SPS Set up pixel counter
+
+SPS LDAAX GWLCOL
+ SEC
+ SBC NEWPT
+ TAY
+ LDAAX GWLCOL+&01
+ SBC NEWPT+&01
+ BMI SPSA ;Ensure this is -ve
+ JSR NEGAY
+SPSA STA ZTEMP+&01 ;Store MSB
+ TYA
+ TAX ;LSB to X
+ ORA ZTEMP+&01 ;Set z=1 if nothing to do
+ RTS
+
+;SPU Work out the internal co-ordinates of where we are
+
+SPU STY ZTEMP
+ TXA
+ TAY
+ LDA ZTEMP+&01
+ BMI SPUA ;This byte is $00 at most
+ LDAIM &00 ;although it can get a $01 in it
+SPUA LDX ZTEMP
+ BNE SPUB
+ JSR NEGAY
+SPUB PHA
+ CLC
+ TYA
+ ADCAX GWLCOL
+ STA NEWPT
+ PLA
+ ADCAX GWLCOL+&01
+ STA NEWPT+&01
+ RTS
+
+CSREAD
+ LDAIM &03 ;Convert internal co-ordiantes at OLDCS & GCSIR
+ JSR SPCA
+ LDAIM &07
+SPCA PHA
+ JSR SWAPB ;Swap old cursor with cursor
+ JSR IEG ;Convert to external co-ordiantes
+ LDXIM &03 ;& copy it
+ PLA
+ TAY
+SPCB LDAAX GCSR
+ STAIY WARGS
+ DEY
+ DEX
+ BPL SPCB
+ RTS
+
+ LNK MOS10

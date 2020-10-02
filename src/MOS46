@@ -1,0 +1,750 @@
+; > MOS46
+ TTL MOS46         OSWORD routines
+ OPT MOS46
+;(c) 1981 ACORN Computers Limited
+;BBC MOS
+;Change record:
+;203 01-May-82 PB     Fix EXTSND bug
+;041 15-Aug-81 PB     First edition
+;Author(s):
+;PB     Paul Bond
+
+
+BYTE  ;OSBYTE call
+;
+; uses:
+; BYTEX, BYTEY (may be shared by sei-routines)
+; JMILO, JMIHI
+;
+ PHA
+ PHP
+ SEI ;**** DISABLE INTERRUPTS ****
+;
+; save A and X
+;
+ STA BYTEA
+ STX BYTEX
+ STY BYTEY
+;
+ LDXIM SVBYTE ;illegal codes are referred to paged ROM
+;
+; check for legal code
+;
+ CMPIM BYTEM
+ BCC BYTELO ;[interactive code]
+;
+; code >= BYTEM
+;
+ CMPIM BYTEH
+ BCC BYTEHI ;[code < BYTEH]
+;
+; check for variable setting
+;
+ CMPIM VORG
+ BCC BYTE0 ;[not a variable setting]
+;
+; set variable
+;
+ CLC ;force A=BYTEH
+;
+WORDU  ;user OSWORD call, C=1, force A=BYTEH+$01
+;
+ LDAIM BYTEH
+ ADCIM ZERO ;add in carry (C=0 => variable, C=1 => user OSWORD)
+;
+BYTEHI
+;
+ SEC
+ SBCIM BYTEM-BYTEL
+;
+BYTE1  ;construct address of specific OSBYTE routine
+;
+ ASLA ;prepare for Y := 2*code
+;
+ SEC ;indicate OSBYTE call
+;
+BYTE2  ;C=0 => OSWORD call
+;
+ STY BYTEY ;save Y
+;
+ TAY ;Y := 2*code
+;
+; allow net to indirect OS call
+;
+ BIT NETIOC
+ BPL NET1 ;[net not indirecting OS calls]
+;
+; indirect OS call thru net
+;
+ TXA ;A := reason code
+ CLV
+ JSR JMINET ;args in BYTEA, BYTEX, BYTEY (call type in A)
+ BVS OSRET ;[net substituted result]
+;
+; construct specific OSBYTE routine address
+;
+NET1  ;call internal routine
+ LDAAY BYTET+&01 ;hi-byte
+ STA JMIHI
+ LDAAY BYTET+&00 ;lo-byte
+ STA JMILO
+;
+; enter specific OSBYTE routine
+;
+; X = SVBYTE or SVWORD
+;
+;
+ LDA BYTEA ;in case OSBYTE call
+ LDY BYTEY ;restore Y
+;
+; determine type of call
+;
+ BCS OSB ;[OSBYTE call]
+;
+; OSWORD call
+;
+ LDYIM ZERO
+ LDAIY WORDX
+;
+OSB
+;
+; ********** V=0 USED BY OSBYTE ROUTINES **********
+ SEC ;used by several routines
+ LDX BYTEX ;restore X (N.B. N, Z status used by several routines)
+ JSR JMI ;enter specific routine
+;
+OSRET
+;
+ RORA ;save C
+ PLP
+ ROLA ;restore C (needed by readline routine - BASIC expects it)
+ PLA ;restore A
+ CLV ;indicate call recognised
+ RTS
+
+
+BYTELO  ;code has top bit clear - use table lo component
+ LDYIM ZERO ;only one argument, set Y=0 for variable settings and ADC ops
+ CMPIM BYTEL
+ BCC BYTE1 ;[recognised code]
+;
+; unrecognised code
+;
+BYTE0  ;unrecognised OSBYTE code
+WORD0  ;unrecognised OSWORD code (C=1)
+; force 4 bytes on stack (making 4 before Preg, simulating a return link)
+ PHP ;N.B. non-zero byte (SEI mode)
+ PHP
+;
+EXTSND  ;entry point used by SOUND (return link still on stack)
+ PLA
+ PLA
+;
+ JSR SVOP ;offer to paged ROMs (N.B. X=SVBYTE or X=SVWORD)
+ BNE BADOSC ;[unrecognised OS call]
+;
+; recognised OS call
+;
+ LDX BYTEX ;replace X (corrupted by SVOP)
+;
+ JMP OSRET
+
+
+BADOSC  ;bad OS call
+ PLP ;restore interrupt status
+ PLA ;restore code to return with
+ BIT FFBYT ;indicate call not recognised
+ RTS
+
+
+MSGON  ;used by CFS
+;Return EQ if messages off and not doing catalogue
+;or during EXEC/SPOOL (during which messages cannot occur
+;since this implies writing chars while within RDCH or WRCH)
+
+ LDA ESSEMA
+ BMI MSGONY ;Inside RDCH/WRCH -> msgs OFF
+
+ LDAIM CATBIT
+ AND CFSTAT
+ BNE MSGONX ;Out with msgs set.
+
+ LDAIM MONBIT
+ AND USFLGS
+MSGONX RTS
+
+
+WORD  ;OSWORD call
+; uses:
+; WORDX, WORDY (may be shared by sei-routines)
+; JMILO, JMIHI (may be shared by sei-routines)
+;
+ PHA
+ PHP ;save interrupt state
+ SEI ;**** DISABLE INTERRUPTS ****
+;
+; save A, X and Y
+;
+ STA WORDA
+ STX WORDX
+ STY WORDY
+;
+ LDXIM SVWORD ;code used if indirection taken
+;
+; check for user OSWORD call
+;
+ CMPIM &E0
+ BCS WORDU ;[user OSWORD call - route thru USRVEC, C=1]
+;
+; not a user OSWORD call
+;
+; check for legal code
+;
+ CMPIM WORDN
+ BCS WORD0 ;[unrecognised code]
+; C=0
+;
+; recognised OSWORD call
+; construct address of specific OSWORD routine
+;
+; C=0
+ ADCIM WORDT-BYTET:SHR: 1
+; C=0
+;
+; enter specific OSWORD routine
+;
+ ASLA ;prepare for Y := 2*code
+; C=0
+ BCC BYTE2 ;[ALWAYS jump, C=0 => OSWORD call]
+
+
+PEEK  ;read byte from I/O processor
+ JSR PEKBYT ;sets X=0, Y=4
+ LDAIX PEEKLO-MCVER ;read byte
+ STAIY WORDX ;save result
+ RTS
+
+POKE  ;write byte to I/O processor
+ JSR PEKBYT ;sets X=0, Y=4
+ LDAIY WORDX ;useful for POKE
+ STAIX PEEKLO-MCVER ;write byte
+MSGONY  ;used by MSGON below
+ LDAIM ZERO
+ RTS
+
+PEKBYT  ;used by PEEK and POKE
+; assumes Y=0, A=[LDAIY WORDX]
+ STA PEEKLO ;lo-IO address
+ INY ;Y := 1
+ LDAIY WORDX
+ STA PEEKHI ;hi-IO address
+ LDYIM &04 ;generally useful
+RVER  ;return OS version number in X
+ LDXIM MCVER ;generally useful
+ RTS
+
+
+VER  ;print version number of OS
+ BNE RVER
+;
+ BRK
+ = FX0MSG
+ = "OS "
+ = VERA
+ = "."
+ = VERB
+ = VERC
+ = ZERO
+
+
+NOTE  ;add note to note buffer
+; *********************
+; MAY ENABLE INTERRUPTS
+; *********************
+; XY -> 8 bytes of info
+; C=1
+; X=SVWORD
+; Y=0
+;
+ [ $Tutu
+        LDAIM   7
+        =       ar_word
+        RTS
+        NOP
+ |
+ INY
+ LDAIY WORDX ;A := command type indicator (hi-byte of 1st argument)
+ CMPIM &FF
+ ]
+ BEQ SPEECH ;[speech command]
+;
+ CMPIM &20
+ LDXIM SVWORD ;in case EXTSND called
+ BCS EXTSND ;[route command to paged ROM]
+;
+; sound command
+;
+ DEY ;Y := 0
+ JSR NOTEX ;C => flush,  A = channel,  Y := 1
+ ORAIM &04 ;********** N.B. assumes BSND1=4
+ TAX ;X := (internal) sound bufferid
+ BCC NOTENF ;[do not flush channel]
+; C=1
+; flush channel
+;
+; C=1
+ JSR PURGEX ;purge buffer
+ LDYIM &01 ;restore Y
+;
+NOTENF
+ JSR NOTEX ;C => release continue,  A = chordcount-1
+ STA NOTEWK
+;
+ PHP ;needed in order to share code with BELL
+ LDYIM &06 ;A := duration-lo
+ LDAIY WORDX
+ PHA
+;
+ LDYIM &04 ;A := note-lo
+ LDAIY WORDX
+ PHA
+;
+; C => release continue
+;
+ LDYIM &02
+ LDAIY WORDX ;A = envelope-lo
+ ROLA ;rotate in release continue bit
+ SEC
+ SBCIM &02 ;envelope numbers start at 1
+ ASLA
+ ASLA ;rotate in 2 zero bits
+ ORA NOTEWK ;A := AEEE ERHH
+;
+; insert byte into buffer, waiting if necessary
+;
+ JSR WRITE
+ BCC NOTE2 ;[byte inserted]
+;
+SPESC  ;ESCAPE detected
+ PLA
+ PLA
+ PLP
+;
+VDUST  ;FX call to return VDU status
+ LDX STATS
+;
+ RTS
+
+
+;
+;; =====
+; BELL
+; =====
+;
+; Add BELL to sound queue
+;
+; ENTRY:- No conditions
+;
+; EXIT:-  A,X,Y Corrupted
+;         Flags preserved
+;
+BELL
+ PHP
+ SEI
+;
+; try to add bell to sound channel queue
+;
+ LDA BELLC
+ ANDIM &07
+ ORAIM &04
+ TAX ;force valid sound channel
+;
+; insert envelope/chord info
+;
+ LDA BELLI
+ JSR INSRT
+;
+; N.B. ignore return code
+; C=0 => inserted,  C=1 => not inserted
+; if first INSRT failed then so will the following INSRTs
+; set to insert duration
+;
+ LDA BELLD
+ PHA
+;
+; set to insert note
+;
+ LDA BELLN
+ PHA
+;
+NOTE2  ;buffer slot available
+; C=0 => inserted,  C=1 => not inserted
+;
+ SEC
+ RORAX MACTIV-BSND1
+ BMI NOTE3 ;[ALWAYS JUMP]
+;
+SPEECH  ;SOUND -1,x,y,z command
+; Y=1
+ PHP ;needed to share code with BELL
+ INY ;Y := $02
+ LDAIY WORDX
+ PHA
+;
+ INY ;Y := $03
+ LDAIY WORDX
+ PHA
+;
+ LDYIM ZERO
+ LDAIY WORDX
+ LDXIM BSPCH
+ JSR WRITE ;insert first byte into buffer
+ BCS SPESC ;[escape detected]
+;
+; C=0
+;
+ ROR SPSTAT ;indicate speech buffer non-empty
+;
+NOTE3  ;add note and duration (ignored if first byte not inserted)
+ PLA
+ JSR INSRT ;add note data to queue
+ PLA
+ JSR INSRT ;add duration info to queue
+ PLP
+ RTS
+
+
+NVLP  ;define envelope shape
+; A := envelope number
+; C=1
+;
+ SBCIM &01 ;subtract 1 from envelope number
+;
+; envelope number forced into range 0 to 15 (1->0, 2->1 ... 16->15)
+; (0 forced to 255, which will have the same effect as 15)
+;
+ ASLA
+ ASLA
+ ASLA
+ ASLA ;envelope number := (envelope number - 1) * 16
+ ORAIM ENVSIZ-&01 ;N.B. ENVSIZ must be 16!
+ TAX ;X -> end of envelope (relative to ENVEL)
+;
+; copy envelope definition to envelope slot
+; padding to 16 bytes with zeroes
+;
+ LDAIM ZERO ;padding value
+ LDYIM ENVSIZ
+;
+NVLP1
+ CPYIM ENVSIZ-&02
+ BCS NVLP2 ;[still padding]
+;
+ LDAIY WORDX
+NVLP2
+ STAAX ENVEL
+ DEX
+ DEY
+ BNE NVLP1
+;
+ RTS
+
+NOTEX  ;extract byte info from offset Y of vector
+ LDAIY WORDX
+ CMPIM &10 ;C => flag (flush or release continue)
+ ANDIM &03
+ INY ;step Y to next slot
+ RTS
+
+RITM  ;read interval time
+ LDXIM STPW+&5-TIME
+ BNE RTM ;[ALWAYS jump]
+; NEVER fall thru
+RATM  ;read absolute time
+ LDX TIMESW
+RTM
+ LDYIM &04
+RTM1
+ LDAAX TIME -&05
+ STAIY WORDX
+ INX
+ DEY
+ BPL RTM1
+WTM0
+ RTS
+
+WITM  ;write interval time, C=1
+ LDAIM STPW+&5-TIME
+ BNE WTM ;[ALWAYS jump]
+; NEVER fall thru
+WATM  ;write absolute time
+ LDA TIMESW
+ EORIM &0F ;N.B. Z=0
+ CLC ;indicate WATM entry
+WTM
+ PHA ;save TIMESW for WATM entry
+ TAX
+ LDYIM &04
+WTM1
+ LDAIY WORDX
+ STAAX TIME -&05
+ INX
+ DEY
+ BPL WTM1
+ PLA
+ BCS WTM0 ;[not WATM entry, do not reset TIMESW]
+; WATM entry, reset TIMESW
+ STA TIMESW
+ RTS
+
+RDLN  ;read input buffer
+; ******************
+; ENABLES INTERRUPTS
+; ******************
+;****************
+;variables:
+;zero page:  RDLNX, RDLNY (contiguous)
+;other page: RDLNN, RDLNLC, RDLNHC (contiguous)
+;****************
+;Called with Y and X the high and low addresses of the information
+;describing what is to be done. The bytes in order are:
+;lsb address of buffer
+;msb address of buffer
+;maximum length allowed
+;minimum character value to be stored in buffer
+;maximum character value to be stored in buffer
+;Return when escape is pressed or seen with CARRY SET
+;Return after CR (which is always stored) with CARRY CLEAR
+;Always returns with Y the number of characters in the buffer
+;DEL,ESC and NAK are always processed
+;**** NOTE ****
+; if the 'other page' variables are put into page zero
+; this routine can be made ~10 bytes shorter.
+; however, an extra pointer variable in page zero would
+; then be required.
+; this routine enables interrupts
+; **********
+; copy 'other page' values
+
+ LDYIM &04
+BUFFPR
+ LDAIY WORDX
+ STAAY RDLNN -&02 ;N.B. offset of -02
+ DEY
+ CPYIM &02
+ BCS BUFFPR ;[more arguments to copy]
+;
+; C=0, Y=1
+; copy buffer pointer
+;
+ LDAIY WORDX ;hi-byte
+ STA RDLNBF +&01
+ DEY ;Y := 0
+ STY LINES ;reset page mode page origin
+ LDAIY WORDX ;lo-byte
+ STA RDLNBF +&00
+;
+; C=0, Y=0
+;
+ CLI ;**** ENABLE INTERRUPTS ****
+ BCC BUFFIN ;[ALWAYS JUMP]
+;
+; NEVER fall thru
+
+
+BUFEXH LDAIM BEL ;reflect bell to indicate error
+BUFIGN DEY ;adjust buffer pointer to ignore character
+BUFECH INY ;increment count of characters in buffer
+; echo character
+BFWRCH
+ JSR OSWRCH
+;
+BUFFIN  ;main loop
+ JSR OSRDCH ;read a character
+ BCS BUFESC ;[escape detected]
+ TAX
+ LDA WRCHSW
+ RORA
+ RORA
+ TXA
+ BCS BUFNQ ;[output does not include VDU]
+;
+; output includes VDU
+;
+;
+ LDX QPOSN
+ BNE BFWRCH ;[VDU queueing, reflect character]
+;
+; output does not include VDU
+;
+BUFNQ  ;VDU not queueing
+ CMPIM MDEL
+ BNE BUFNXA ;[not DEL]
+;
+; DEL received
+;
+ CPYIM ZERO
+ BEQ BUFFIN ;[delete at start of line]
+;
+; C=1, A=DEL
+ DEY
+ BCS BFWRCH ;[ALWAYS jump, reflect DEL and get next char]
+; NEVER fall thru
+
+BUFNXA
+ CMPIM MNAK
+ BNE BUFNXB ;[not DEL or NAK]
+ TYA
+ BEQ BUFFIN ;[cancel at start of line, ignore]
+;
+; cancel with non-zero count of characters
+;
+ LDAIM MDEL
+;
+BUFCNL  ;output DEL for each character in the buffer
+ JSR OSWRCH
+ DEY
+ BNE BUFCNL ;[more characters to delete]
+ BEQ BUFFIN ;[ALWAYS jump, reached start of line]
+; NEVER fall thru
+;
+BUFNXB  ;check for ESC explicitly in case machine in non ESC mode
+;CMPIM ESC
+;BEQ BUFESC ;[ESC, N.B. C = 1]
+; not DEL, NAK or ESC
+ STAIY RDLNBF ;store character in buffer
+ CMPIM MCR
+ BEQ BUFEND ;[CR detected, exit indicating CR received]
+ CPY RDLNN
+ BCS BUFEXH ;[buffer exhausted, do not echo character]
+;
+; buffer not exhausted
+;
+ CMP RDLNLC
+ BCC BUFIGN ;[character < lo-character]
+ CMP RDLNHC
+ BEQ BUFECH ;[character = hi-character, so accept]
+ BCC BUFECH ;[character < hi-character, so accept]
+ BCS BUFIGN ;[ALWAYS jump, character > hi-character, so ignore]
+; NEVER fall thru
+
+BUFEND  ;read line successful
+; echo LF CR
+ JSR OSNEWL
+ JSR JMINET ;N.B. assumes NTCR has value $0D
+;
+BUFESC  ;escape exit (C=1)
+ LDA ESCFLG
+ ROLA ;C=0 => no escape,  C=1 => escape
+ RTS
+
+
+SPRINT  ;change printer selection (*FX 5)
+; allow interrupts during wait, this means that:
+; (a) the printer can purge AND/OR
+; (b) escape can be detected
+ CLI
+ SEI
+ BIT ESCFLG
+ BMI SPR0 ;[escape detected]
+ BIT PFLAG
+ BPL SPRINT ;[printer busy]
+; mention change of printer to print routines
+ JSR UPTX ;N.B. Y corrupted
+; interrupts may have corrupted BYTEX and BYTEY, so restore them
+ LDYIM ZERO ;Y altered by call to UPTX
+ STY BYTEY
+; N.B. X reset at SETVX
+; N.B. A not altered since SPRINT
+;
+V2B156  ;convert FX 1,5,6 to FX 241,245,246
+ ORAIM &F0
+ BNE SETVX ;[ALWAYS jump]
+;
+ARRPT  ;A = $0C, set auto-repeat repeat count
+; N.B. previous instruction was LDX
+; C=1
+ BNE ARRPT1 ;[X<>0 => do not set defaults]
+; set defaults
+ LDXIM DAUTOD
+ STX FARSET
+ LDXIM DAUTOP
+ARRPT1  ;A = $0C, C=1
+ARDLY  ;A = $0B, C=1, set auto-repeat delay count (0 => disable)
+ ADCIM FARSET-VBASE-&01-&0B- 233 ;$01 for carry, $0B for FX base
+;
+V2B34  ;C=1
+ CLC
+ ADCIM  233 ;convert FX 3&4 to FX 236,237
+;
+SETVX
+ STX BYTEX
+;
+SETV  ;set variable
+; A = FX code
+; X = value
+; Y = mask
+ TAY ;Y := FX code
+ LDAAY VBASE ;A := old value
+ TAX ;X := old value
+ AND BYTEY ;apply mask
+ EOR BYTEX ;apply value
+ STAAY VBASE ;store new value
+ LDAAY VBASE+&01
+ TAY ;return following byte
+SPR0
+ RTS
+
+
+BAUDS  ;baud rate table (N.B. RS423 bit set cos of B9600 definition)
+BUFTYP  ;**** WARNING - SUBTLE WAY TO DETECT SOUND BUFFERS ****
+; (*) = sound buffer
+SOUNDB * &80
+ = B9600 ;default baud rate / buffer 0
+ = &7F ;75     111 111 / buffer 1
+ = &5B ;150    011 011 / buffer 2
+ = &6D ;300    101 101 / buffer 3
+ = &49+SOUNDB ;1200   001 001 / buffer 4 (*)
+ = &76+SOUNDB ;2400   110 110 / buffer 5 (*)
+ = &52+SOUNDB ;4800   010 010 / buffer 6 (*)
+ = B9600+SOUNDB ;9600 100 100 / buffer 7 (*)
+ = &40 ;19200  000 000 / buffer 8
+
+
+WFVS  ;wait for vertical sync
+ LDA CYCLE
+WFVS1  ;wait for CYCLE to alter
+ CLI ;must enable interrupts to allow CYCLE to operate
+; this should give the user control immediately after VSYNC
+; interrupt occurred
+ SEI
+ CMP CYCLE
+ BEQ WFVS1 ;[CYCLE not altered]
+;
+; share exit with read VDU variable
+;
+VDUVAR  ;read VDU variables
+ LDYAX VARBLE+&01
+ LDAAX VARBLE+&00
+ TAX
+ RTS
+
+
+RSOFT  ;reset soft keys
+; initialise soft key pointers
+; exits with X=0 (used by RESET)
+; ********** MUST NOT CORRUPT Y (SEE RESET) **********
+ LDAIM NSOFTK
+ STA USKFLG ;signal soft keys inconsistent
+ LDXIM ZERO
+STTA  ;set soft key buffer pointers, including the two end pointers
+ STAAX SKPTR
+ INX
+ BNE STTA
+; X=0
+ STX USKFLG ;USKFLG set to zero when soft keys consistent
+; X=0
+ RTS
+
+
+ LNK MOS48

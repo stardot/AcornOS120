@@ -1,0 +1,538 @@
+; MOS30
+ OPT &01
+ TTL MOS30         Manifests
+
+;Change record:
+
+
+ < &0003
+ > &0002
+
+
+
+
+; module print selections
+;
+MOS30 * DEFOPT
+MOS32 * DEFOPT
+MOS34 * DEFOPT
+MOS36 * DEFOPT
+MOS38 * DEFOPT
+MOS40 * DEFOPT
+MOS42 * DEFOPT
+MOS44 * DEFOPT
+MOS46 * DEFOPT
+MOS48 * DEFOPT
+
+MOS52 * DEFOPT
+MOS54 * DEFOPT
+MOS56 * DEFOPT
+
+MOS99 * DEFOPT
+
+
+ OPT MOS30
+;(c) 1981 ACORN Computers Limited
+;BBC Microcomputer Machine Operating System (MOS)
+;Change record:
+;Author(s):
+;PB     Paul Bond
+;MP     Mike Prees
+
+
+; version number
+;
+MCVER * &01 ;OS binary version number
+VERA * "1"
+VERB * "2"
+VERC * "0"
+
+
+; composition
+;
+TRUE * &00 ;for conditional assembly
+FALSE * &FF ;for conditional assembly
+
+
+; options
+;
+INKYSW * TRUE
+
+
+; VDU software interface
+;
+VDUORG * &C300 ;VDU software module origin
+VDINIT * VDUORG +&00 ;initialise RAM and VDU
+ORIGIN * ENDVDU
+
+
+; tube interface
+;
+ ^ &0400
+TBLANG # &03 ;enter language
+TBESC # &03 ;alter escape condition
+TBADDR # &03 ;address translation
+
+
+
+; error codes
+
+; special reports
+;
+
+
+
+; infamous BASIC error number assignment boob
+;
+
+
+
+; MOS errors
+;
+
+
+
+; $FF is reserved for a non-trappable error in future systems
+;
+BADCMD * &FE ;'Bad command'
+BADST * &FD ;'Bad string'
+BADADR * &FC ;'Bad address'
+BADKY * &FB ;'Bad key'
+KEYUSE * &FA ;'Key in use'
+NOLROM * &F9 ;'No language ROM'
+NOFSYS * &F8 ;'No filing system'
+FX0MSG * &F7 ;operating system version number
+
+
+; file system control operations
+;
+FSOPT * &00 ;*OPT x,y   value assumed by FX code
+FSEOF * &01 ;EOF#chan   value assumed by FX code
+FSNOTA * &02 ;*non-alpha
+FSNAME * &03 ;*name
+FSRUN * &04 ;*RUN name
+FSCAT * &05 ;*CAT name
+FSDIE * &06 ;kill filing system
+FSHRNG * &07 ;return handle range in X (lo) and Y (hi)
+
+FSCLI * &08 ;*command encountered
+
+
+; user print operations
+;
+UPTIME * &00 ;timer interrupt
+UPWRCH * &01 ;write character
+; return C=0 => printer busy,  C=1 => printer free
+
+
+
+
+; NET operations
+;
+; hi-level
+;
+; VALUES $01-$03,$05 RESERVED FOR PRINTER INTERFACE
+NTWRCH * &04 ;WRCH
+NTRDCH * &06 ;RDCH
+
+NTWORD * &08 ;OSWORD call (c.f. SVWORD)
+
+
+
+; service ROM operations
+;
+NROM * &0010 ;number of paged ROMs
+
+SVNOP * &00 ;no operation
+SVSTAT * &01 ;offer static allocation
+SVDYN * &02 ;offer dynamic allocation
+SVBOOT * &03 ;offer bootstrap
+SVNAME * &04 ;offer command
+SVINT * &05 ;unknown interrupt
+SVBRK * &06 ;offer BRK
+SVBYTE * &07 ;offer bad OSBYTE (N.B. also NTxxxx code)
+SVWORD * &08 ;offer bad OSWORD (N.B. also NTxxxx code)
+;
+ [ FALSE=0
+SVRSHR * &09 ;release shared workspace
+ |
+SVHELP * &09 ;*HELP facility
+ ]
+;
+SVCSHR * &0A ;claim shared workspace
+SVRNMI * &0B ;release NMI
+SVCNMI * &0C ;claim NMI
+SVISFS * &0D ;initialise speech filing system
+SVRSFS * &0E ;read from speech filing system
+SVFSIC * &0F ;changed filing system indirections
+
+SVSHES * &10 ;shut EXEC and SPOOL files
+SVHWMC * &11 ;change of HWM ******** DO NOT CHANGE ********
+SVSTFS * &12 ;start filing system N
+SVTPIN * &FE ;tube post-initialisation **** VALUE ASSUMED BY RESET ****
+SVTUBE * &FF ;initialise tube software
+
+
+; language entry reasons
+;
+LGNONE * &00 ;no language ROM (tube entry reason)
+LGENTR * &01 ;enter language
+
+
+; RS423 transmitter control bits
+;
+RHITXD * &00 ;RTS hi, Tx interrupt disabled
+RHITXE * &20 ;RTS hi, Tx interrupt enabled
+RLOTXD * &40 ;RTS lo, Tx interrupt disabled
+RHITXB * &60 ;RTS hi, Tx break
+RSCDEF * &16+RLOTXD ;Rx interrupt disabled ...
+; ... RTS lo, Tx interrupt disabled, divide by 64, 8 data bits, 1 stop bit
+
+
+; speech processor opcodes
+;
+SPOPRB * &10 ;read byte
+SPOPSE * &60 ;speak external
+SPOPBR * &30 ;read and branch
+SPOPLA * &40 ;load address
+SPOPSP * &50 ;speak
+SPOPRT * &FF ;reset
+
+
+; memory map assignments
+;
+FRED * &FC00
+MEG1P * &FCFF ;1MHz bus page selector
+JIM * &FD00
+SHEIL * &FE00
+ACIA * &FE08
+SERPRC * &FE10 ;serial processor
+
+VPROC0 * &FE20 ;video processor
+VPROC1 * VPROC0 +&01
+STNID * &FE20 ;ECONET station identifier
+ROM * &FE30 ;ROM select latch
+VIAA * &FE40 ;first 6522
+VIAB * &FE60 ;second 6522
+
+
+; analog to digital converter
+;
+ADCONV * &FEC0
+ADCCTL * ADCONV +&00
+ADCHI * ADCONV +&01
+ADCLO * ADCONV +&02
+
+
+; tube register(s)
+;
+TREG0 * &FEE0
+TREG3 * &FEE5
+
+
+
+; test software indirection
+;
+TSTSFT * &FDFE
+
+
+; language ROM address
+;
+LANG * &8000
+ROMHRD * LANG +&00 ;hard ROM entry point
+ROMSFT * LANG +&03 ;soft ROM entry point
+
+ROMTYP * LANG +&06 ;ROM type
+COPYRP * LANG +&07 ;relative offset (from LANG) to copyright string
+ROMVER * LANG +&08 ;version byte
+ROMMSG * LANG +&09 ;name
+
+
+; miscellaneous constants
+;
+ZERO * &00
+NULL * ZERO ;don't care value
+SPACE * &20
+AT * &40
+ALPHAA * "A"
+DQUOTE * """"
+SPLAT * "*"
+POUND * &60
+
+
+
+BEL * &07
+
+MHT * &09
+TAB * MHT
+MLF * &0A
+MCR * &0D
+MNAK * &15
+
+ESC * &1B
+MDEL * &7F
+
+
+; real softkeys
+;
+SOFTK0 * &0080 ;f0 (value must NOT be altered)
+SOFTK1 * SOFTK0 +&01 ;f1
+SOFTK2 * SOFTK1 +&01 ;f2
+SOFTK3 * SOFTK2 +&01 ;f3
+SOFTK4 * SOFTK3 +&01 ;f4
+SOFTK5 * SOFTK4 +&01 ;f5
+SOFTK6 * SOFTK5 +&01 ;f6
+SOFTK7 * SOFTK6 +&01 ;f7
+SOFTK8 * SOFTK7 +&01 ;f8
+SOFTK9 * SOFTK8 +&01 ;f9
+
+
+; pseudo softkeys, including cursor controls
+;
+SOFTKA * SOFTK9 +&01
+SOFTKB * SOFTKA +&01 ;COPY
+MCOPY * SOFTKB
+SOFTKC * SOFTKB +&01 ;cursor left arrow
+CURLFT * SOFTKC
+SOFTKD * SOFTKC +&01 ;cursor right arrow
+CURRHT * SOFTKD
+SOFTKE * SOFTKD +&01 ;cursor down
+CURDWN * SOFTKE
+SOFTKF * SOFTKE +&01 ;cursor up
+CURUP * SOFTKF
+MAXSK * &BF ;maximum value of SHIFT/CTRL softkey code
+BREKEY * &CA ;softkey 10 feature
+
+
+; default auto-repeat rates
+;
+DAUTOD *  50 ;delay (centiseconds)
+DAUTOP *  8 ;period (centiseconds)
+
+
+; default RS423 baud rates
+;
+B9600 * &64 ;Tx9600 and Rx9600
+
+
+; RS423 printer timeout period
+;
+PTIMUT * &E7 ;(-) 25/50 second
+
+
+; OS constants
+OSHWM * &0E00 ;default high water mark
+NMI * &0D00
+
+
+; buffer indices
+;
+BRDCH * &0000 ;RDCH (keyboard)
+BRSI * &0001 ;RS423 input
+INPUT * BRSI
+BRSO * &0002 ;RS423 output
+OUTPUT * BRSO
+BPRNT * &0003 ;print
+BSND1 * &0004 ;sound channel 1
+BSND2 * BSND1+&1 ;sound channel 2
+BSND3 * BSND2+&1 ;sound channel 3
+BSND4 * BSND3+&1 ;sound channel 4
+BSPCH * BSND4+&1 ;speech
+BUPB * BSPCH
+
+
+; keyboard status bits
+;
+SHFT * &08 ;SHIFT active
+CAPSL * &10 ;not CAPITALS lock
+SHFTL * &20 ;not SHIFT lock
+CTRL * &40 ;CTRL active
+INVERT * &80 ;SHIFT enable
+CTLSHI * &B7 ;inverted (CTRL and SHIFT status bits)
+
+
+; keyboard matrix element values
+;
+CPLKKY * &C0 ;CAPITALS lock key
+SHLKKY * &D0 ;SHIFT lock key
+
+
+; FX numbers
+;
+FXCODE * &88
+FXMOTR * &89
+FXOPT * &8B
+FXTAPE * &8C
+FXSROM * &8D
+FXTV * &90
+
+
+; MC6850 addresses
+;
+RSCTL * ACIA
+RSTAT * ACIA
+RSDATA * ACIA +&01
+
+
+; miscellaneous
+;
+NADC * &04 ;number of ADC channels
+
+
+; 6522 addresses
+;
+PBQ * VIAA
+PAQ * VIAA +&01
+DDRBQ * VIAA +&02
+DDRAQ * VIAA +&03
+TQCLQ * VIAA +&04
+TQCHQ * VIAA +&05
+TQLLQ * VIAA +&06
+TQLHQ * VIAA +&07
+TRCLQ * VIAA +&08
+TRCHQ * VIAA +&09
+SRQ * VIAA +&0A
+ACRQ * VIAA +&0B
+PCRQ * VIAA +&0C
+CAPULS * &0A
+CA2LO * &0C
+CA2HI * &0E
+CBPULS * &A0
+CB2LO * &C0
+CB2HI * &E0
+IFRQ * VIAA +&0D
+IERQ * VIAA +&0E
+PAPQ * VIAA +&0F
+PBR * VIAB
+PAR * VIAB +&01
+DDRBR * VIAB +&02
+DDRAR * VIAB +&03
+TQCLR * VIAB +&04
+TQCHR * VIAB +&05
+TQLLR * VIAB +&06
+TQLHR * VIAB +&07
+TRCLR * VIAB +&08
+TRCHR * VIAB +&09
+SRR * VIAB +&0A
+ACRR * VIAB +&0B
+PCRR * VIAB +&0C
+IFRR * VIAB +&0D
+IERR * VIAB +&0E
+PAPR * VIAB +&0F
+
+
+; interrupt flags in 6522 IER and IFR
+;
+CA1 * &0002
+CA2 * &0001
+CB1 * &0010
+CB2 * &0008
+TIMER1 * &0040
+TIMER2 * &0020
+
+
+; VIA pin assignments
+;
+; VIAA:-
+; PA7-PA0 keyboard
+; CA1     VSYNC interrupt
+VSYNC * CA1
+; CA2     keyboard interrupt ('any key down')
+KEYBD * CA2
+; PB7     VSP interrupt
+; PB6     VSP ready
+; PB5,PB4 paddle
+; PB3-PB0 addressable latch
+; PB3     data value
+; PB2-PB0 latch register
+;         0   sound enable
+;         1   speech RS
+;         2   speech WS
+;         3   keyboard disable
+;         4,5 hardware scroll
+;         6,7 ROM select
+; CB1     ADC
+ADC * CB1
+; CB2     light pen
+
+; VIAB:-
+; PA7-PA0 printer output
+; CA1     printer acknowledge
+PRNT * CA1
+; CA2     printer strobe
+; PB7-PB0 reserved for user
+; CB1     reserved for user
+; CB2     reserved for user
+; TIMER 1 = MAIN CLOCK
+CLOCK * TIMER1
+
+
+; page one is main system stack
+;
+STACK * &FF
+
+
+
+; BUFFERS
+
+
+; keyboard
+;
+RDCHBF * &03E0 ;RDCH (keyboard) buffer
+RDCHSZ * &0020
+
+
+; sound
+;
+SNDWRK * &0800 ;sound workspace
+MACTIV * SNDWRK+&04 ;activation flags
+
+SNDBF1 * &0840 ;sound buffer channel 1
+SBSIZE * &0010 ;sound buffer size
+SNDBF2 * SNDBF1+SBSIZE ;sound buffer channel 2
+SNDBF3 * SNDBF2+SBSIZE ;sound buffer channel 3
+SNDBF4 * SNDBF3+SBSIZE ;sound buffer channel 4
+
+
+; printer
+;
+PRNBF * &0880 ;print buffer
+PRNSZ * &0040
+
+
+; envelopes
+;
+ENVEL * &08C0 ;sound envelopes
+ENVSIZ * &0010 ;size of each envelope
+NENV * &0004 ;number of envelopes
+
+
+; RS423 output
+;
+RSROBF * &0900 ;RS423 output
+RSROSZ * &00C0
+
+
+; speech
+;
+SPCHBF * &09C0 ;speech buffer
+SPCHSZ * &0040
+
+
+; RS423 input
+;
+RSRIBF * &0A00 ;RS423 input
+RSRISZ * &0100
+RSOVR *  8 ;handshake overflow allowance
+
+
+; soft key buffer
+;
+SKPTR * &0B00 ;pointers to soft key strings
+NSOFTK *  16
+SKBUF * SKPTR+&01 ;N.B. soft key pointers are relative to this origin
+SKEND * SKPTR+NSOFTK ;logical end of string
+TOTSFT * SKPTR+&0100-SKEND-&01 ;soft key data byte size
+
+
+ LNK MOS32

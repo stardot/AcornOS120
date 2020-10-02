@@ -1,0 +1,617 @@
+
+ TTL C.F.S. - I/O Utilities -> MOS76
+ OPT MOS76
+
+
+;****** UTILITIES II ******
+
+ADDBKA
+
+;Increment block pointer by 256 bytes, assuming that
+;block received is 256 bytes long. Note BKADDR is 4 bytes
+
+ INC BKADDR +&01
+ BNE ADDBK1
+ INC BKADDR +&02
+ BNE ADDBK1
+ INC BKADDR +&03
+ADDBK1 RTS
+
+
+
+
+WSPHEX PHA
+ JSR PRTSP
+ PLA
+WHEX PHA
+ LSRA
+ LSRA
+ LSRA
+ LSRA
+ JSR WDIGIT
+ PLA
+WDIGIT CLC
+ ANDIM &0F
+ ADCIM "0"
+ CMPIM &3A
+ BCC HXDSKP
+ ADCIM &06
+HXDSKP JMP OSWRCH
+
+
+
+
+PRTSP LDAIM SPACE
+ BNE HXDSKP
+
+
+ESCAPE
+
+;Checks ESCAPE happened. If so, does error
+;break with appropriate message after
+;acknowldging the ESCAPE.
+
+;Also switches off various status bits
+;Motor switched OFF
+
+;Note, no test is done if inside WRCH or RDCH
+;so that ESCAPE cannot occur inside EXEC/SPOOL
+
+ PHP
+ BIT ESSEMA
+ BMI ESCLL0 ;Inside WRCH or RDCH -> no ESCAPE
+ BIT ESCADD
+ BMI ESCERR
+ESCLL0
+ PLP
+ RTS
+
+ESCERR
+
+ JSR CATOFF ;Switch CAT bit off
+ JSR CASMOF ;Motor OFF/release
+
+ LDAIM &7E
+ JSR OSBYTE ;Acknowledge ESC to MOS
+
+ BRK  ;Then error
+ = &11,"Escape",0
+ 
+
+
+
+
+LODHDR TYA
+ BEQ LODHD1 ;Print message depending on Y
+ JSR MSGOUT
+ = MCR,"Loading",MCR,0
+ 
+
+
+LODHD1
+
+ STA ERRSW ;A always zero at this point
+   ;Set ERRSW so always extra line after "Loading"
+   ;and before file name.
+
+
+ LDXIM &FF ;Set "abort if nesc." flag
+ LDA HDRCRC
+ BNE HDRCHK ;Header CRC error takes precedence over
+;file and block errors, since a header error may
+;spuriously cause either or both of these.
+
+ JSR CMPFT
+
+ PHP  ;Store EQ bit from CMPFT
+ LDXIM &FF ;Set "abort if nesc." flag
+ LDYIM FILEER
+ LDAIM /(FILEER ) ;Set error pointers
+ PLP
+
+ BNE TAPER0 ;Files don't match
+
+CATERR  ;Entry from catalogue here
+HDRCHK
+ LDYIM DATAER ;Set lo byte of error pointer
+ LDA HDRCRC ;Was header CRC ok ?
+ BEQ CHKBKN ;Yes, check block no.
+ LDAIM /(DATAER ) ;No, do error
+ BNE TAPER0
+
+
+CHKBKN LDA INFO +BKNOLO ;Is expected block ??
+ CMP BLOKNO
+ BNE BLKERR
+ LDA INFO +BKNOHI
+ CMP BLOKNO +&01
+ BEQ CHEKSM ;No error -> go on
+
+BLKERR LDYIM BLOKER
+ LDAIM /(BLOKER )
+
+TAPER0 PHA ;Store error ptr.
+ TYA
+ PHA
+ TXA ;Store "abort if nesc." flag
+ PHA
+ JSR PRTHDL ;Print header ON NEW LINE
+ PLA
+ TAX
+ PLA
+ TAY
+ PLA
+ BNE TAPERR
+
+CHEKSM TXA
+ PHA ;Store X over possible IRUPT call
+ JSR PRTHDR ; Print header info.
+
+ JSR CHEKLP ;Wait for end of BG job
+;In SFS, CHEKLP reads next SFS block
+
+;Note X & Y corrupted by IRUPT, which
+;is only called when SROM system active.
+;Y is restored at ERREXT. 
+;
+ PLA
+ TAX ;Restore "abort if nesc." flag
+
+ LDA CHKSUM
+ ORA CHKSUM +&01
+ BEQ ERREXX ;No errors, tape ok, exit
+
+ LDYIM DATAER ;Set message ptr.
+ LDAIM /(DATAER )
+
+TAPERR DEC ERRSW
+ PHA  ;Store hi byte of error pointer
+
+ BIT ESSEMA
+ BMI ERRABT ;During EXEC/SPOOL can ABORT ONLY !
+
+ TXA  ;If X = 0 => print only, X = $FF abort if nesc.
+ AND SROMSW ;If not cataloging, and SROM => abort
+ BNE ERRABT
+ TXA ;Otherwise, check if "abort on error" option set
+;If so, do BRK 
+
+ ANDIM ABTBIT
+ AND USFLGS
+ BEQ PRTERR ;Abort not set => print
+
+ERRABT PLA
+ STA FTPTR +&01 ;Set error pointer
+ STY FTPTR
+ JSR ECLOSE ;close EXEC file
+ LSR ESSEMA ;Switch off critical region
+ JSR BEEPOF ;Motor off/BEEP
+ JMI FTPTR ;Abort = break with error msg.
+
+PRTERR PLA  ;Restore hi byte of pointer
+
+;Now must add ONE to pointer to get past BRK
+;at front of message. Note MSGOUT does an INC
+;before printing, so don't have to add 2.
+
+ INY  ;Inc lo byte past BRK instruction
+ BNE PRTEON
+ CLC
+ ADCIM &01
+PRTEON PHA  ;Set stack for MSGOUT
+ TYA
+ PHA
+; Print message and enter code
+; directly AFTER message
+;
+MSGOUT
+
+;Enter here for messages printed if MSGON
+;Note, X must be preserved
+
+ JSR MSGON
+ TAY  ;Store for STROUT
+
+STROUT
+
+
+ PLA
+ STA FTPTR
+ PLA
+ STA FTPTR +&01
+ TYA
+ PHP  ;Z bit => print
+VSTRLP INC FTPTR
+ BNE VSTRL1
+ INC FTPTR +&01
+VSTRL1 LDYIM &00
+ LDAIY FTPTR
+ BEQ VSTREX
+ PLP
+ PHP
+ BEQ VSTRLP ;If Z set => don't print
+ JSR OSASCI
+ JMP VSTRLP
+VSTREX PLP  ;Restore stack
+ INC FTPTR
+ BNE VSTREZ
+ INC FTPTR +&01
+
+;Exit always with Z CLEAR
+
+VSTREZ JMI FTPTR
+
+
+CMPFT
+ LDXIM &FF
+CMPFT2
+ INX
+CMPFT1  ;match filename, equating cases
+ LDAAX FILNAM
+ BNE CMPFT3 ;[not at end of filename]
+;
+; at end of filename, either:
+; X=0   =>  match on filename "" (null filename)
+; X<>0  =>  INFO(X)=0 => match,  <>0 => no match
+;
+ TXA
+ BEQ CMPFT0 ;[match on filename "", return EQ status]
+ LDAAX INFO
+CMPFT0  ;EQ => match,  NE => no match
+ RTS
+
+CMPFT3  ;not at end of filename
+ JSR CAPS
+ EORAX INFO
+ BCS NALPHA
+; filename character is a letter
+ ANDIM &DF ;equate cases
+NALPHA
+ BEQ CMPFT2
+; filenames not equal
+; return NE status
+ERREXX  ;Called from around CSON1
+ RTS
+
+
+
+DATAER BRK
+ = CFSERJ
+ = MCR,"Data?",0
+ 
+ BNE REWIND ;Z always CLEAR after MSGOUT
+FILEER BRK
+ = CFSERF
+ = MCR,"File?",0
+ 
+ BNE REWIND ;Z always CLEAR after MSGOUT
+BLOKER BRK
+ = CFSERH
+ = MCR,"Block?",0
+ 
+
+REWIND LDA ERRSW
+ BEQ ERROEX ;If no error, leave
+ TXA
+ BEQ ERROEX ;If only printing, no retry
+ LDAIM RETBIT ;Otherwise, see if RETRY set
+ BIT USFLGS
+ BEQ ERROEX
+ JSR CRESET
+ TAY ;Assume A is non-zero from RESET
+ JSR STROUT
+ = MCR,BEL,"Rewind tape",MCR,MCR,0
+ 
+
+;Note NZ set by VSTRIN here
+CSON1 RTS
+
+
+ERROEX JSR NOOLIN ;New line if msgs on
+
+;Wait for BG job to finish since if IGNORE set, must
+;allow LOADs etc. to complete.
+
+CHEKLP LDA ITYPE
+ BEQ CSON1 ;If BG job finished exit with EQ status
+
+;Note: loop must check ITYPE first, coz may be no
+;BG job in the case of zero length file. Therefore
+;don't want to read next SROM byte.
+
+ JSR ESCAPE
+ LDA SROMSW
+ BEQ CHEKLP ;If no speech, wait for end
+ JSR IRUPT ;Otherwise, get next byte
+ JMP CHEKLP ;And loop
+
+
+
+;CHIP CONTROL
+
+BEEPOF JSR MSGON
+ BEQ CASMOF
+ LDAIM &07
+ JSR OSWRCH ;Cannot use MSGOUT, coz called from inside it
+CASMOF LDAIM TUBERL ;Tube release number
+ JSR TBINIT ;Release tube
+
+;NOTE - TBINIT checks BKADDR. However, either at this point
+;the tube has been claimed, in which case BKADDR is still a
+;tube address and the release will go through; or the tube
+;has not been claimed, in which case it don't matter if the
+;release don't happen. NOTE also that a claim is done in
+;TBINIT before the release, so that spurious claims may
+;result depending on the values in BKADDR. These will, however
+;be immediately released again.
+
+ LDXIM &00
+ JSR CMOTOR ;Motor off: drive set in MOTOR.
+;
+RELEAS
+; called by CFS on exit from any cassette operation
+; N.B. RS423 might not have been claimed beforehand
+;
+ PHP
+ SEI ;must disable interrupts
+;
+; restore MOS 6850 and serproc byte
+;
+ LDA SPREGA
+ STA SERPRC
+;
+ LDAIM ZERO
+ STA RSTUT
+ BEQ RELX ;[ALWAYS jump]
+;
+MC6850
+ PHP
+;
+RELX
+; CORRUPTS A
+; setup MC6850
+; disable Rx/Tx interrupts
+; divide by 64, 7 data bits + 1 stop bit, even parity
+; or 8 bits, one stop bit, no parity!!
+;
+ JSR CRESET ;master reset
+;
+; reset data format bits
+;
+ LDA RSCTFL
+;
+ JMP STARSC ;share code with 'RS423'
+
+
+RSWT1
+ PLP
+ BIT ESCFLG
+ BPL CLAIM ;[no escape, ALWAYS jump]
+;
+; escape condition
+;
+ RTS
+
+
+SETSDF LDA OPTS ;Set options for sequential access
+ ASLA  ;=> bottom nybble of OPTS
+ ASLA
+ ASLA
+ ASLA
+ STA USFLGS
+ LDA SEQGAP ;Set (variable) PUTBYTE gap time
+ BNE GAPOUT ;[ALWAYS JUMP]
+;
+SETDEF LDA OPTS
+ ANDIM &F0 ;Chop out seq. opts
+ STA USFLGS ;Set options for load/save operation
+ [ GLYN =0;If special system for glyn
+ LDA SEQGAP
+ |
+ LDAIM GAP ;Set SAVE gap -> unchangeable
+ ]
+GAPOUT STA GAPTIM
+;
+; fall thru into CLAIM
+;
+CLAIM
+; Claim RS423 h/w interface
+; Called by CFS
+ CLI
+ PHP
+ SEI
+ BIT RSFLAG
+ BPL RSWT1 ;[RS423 busy]
+ LDA RSTUT
+ BMI RSWT1 ;[RS423 dormant, but still timing out]
+; RS423 dormant and timed out OR claimed => RS423 available
+; RSTUT>=0
+; headline: 'CFS Claims RS423'
+ LDAIM &01 ;allow for many call claims
+ STA RSTUT ;RSTUT := 1
+
+ [ &00=0
+ JSR CRESET
+ PLP
+ RTS
+ |
+ BNE RELX ;[ALWAYS jump]
+; NEVER fall thru
+ ]
+
+
+CRESET LDAIM &03
+ BNE SETCHP
+
+
+TXINIT
+ LDAIM TXSTAT
+ STA TXFLAG
+ BNE CHPINT
+
+RXINIT LDAIM SEROFF
+
+;Switch motor off without going through OS
+;coz don't want user to be bothered with each
+;motor blip
+
+ STA SERPRC
+
+ LDXIM &FF ;250 * 2.5 usecs = 1 millisec
+RXINL1 DEX
+ BNE RXINL1
+ STX TXFLAG
+
+ LDAIM SERON
+ STA SERPRC ;Motor on again
+
+ LDAIM RXSTAT
+CHPINT ORA SPEED ;Put in bottom bit, set in INIT from MOS
+SETCHP STA STATUS
+ RTS
+
+
+NXTBLK LDX INFO +BKNOLO
+ LDY INFO +BKNOHI
+ INX
+ STX BLOKNO
+ BNE NXTBLX
+ INY
+NXTBLX STY BLOKNO +&01
+ RTS
+
+SETJOB LDYIM &00
+ STY IFLAG
+SETJB1 STY CHKSUM
+ STY CHKSUM +&01
+ RTS
+
+
+MOVFN LDYIM &FF
+MOVFNL INY
+ INX
+ LDAAX VARPGE
+ STAAY FILNAM
+ BNE MOVFNL
+ RTS
+
+
+MOTONW LDYIM WRITFX ;Motor on for output
+MOTON CLI  ;Ensure can talk to tape
+ LDXIM &01 ;Motor on
+ STY CURDRV ;Store current drive
+CMOTOR LDAIM FXMOTR  ;=> motor function
+
+;Load drive number into Y, so switching motor
+;off is always done with the drive most recently
+;switched on (seems logical).
+
+ LDY CURDRV
+ JMP OSBYTE
+
+CHKHND
+
+;Check handle in Y is open
+;and corresponds to mask in A
+
+ STA TEMP
+ TYA
+ EOR SROMSW ;Reverse SFS bit in handle if in SFS
+ TAY
+ LDA CFSTAT
+ AND TEMP ;Mask out bits not required
+ LSRA
+ DEY
+ BEQ CHKHN1
+ LSRA
+ DEY
+ BNE HNDERR
+CHKHN1 BCS CHKHXX
+
+
+HNDERR BRK
+ = CFSERB
+ = "Channel",0
+ 
+
+
+TWINIT
+ LDAIM TUBEW ;Write init. for tube
+TBINIT
+;Check the address at BKADDR is accross tube
+;and that tube is present. If so, claim tube, and call
+;address routine with value origionally in A on entry.
+
+ JSR TUBCHK ;Check address + tube present.
+ BEQ TINIT0 ;Don't tube. (NOTE TAX done in TUBCHK)
+ TXA ;Restore tube reason code
+ LDXIM BKADDR
+ LDYIM /(BKADDR ) ;Address for tube routine
+TBINT1 PHA ;Entry from RUN with non-BKADDR address
+ LDAIM TUBECL ;"Claim" reason code
+TUBELP JSR TBADDR ;Attempt claim
+ BCC TUBELP ;Continue to try and claim
+ PLA ;Restore address reason code
+ JMP TBADDR
+
+
+
+TUBCHK TAX ;Store A
+ LDA BKADDR +&02
+ AND BKADDR +&03
+ CMPIM &FF ;If $FF, address is IO proc., so exit
+ BEQ TUBCHX
+ LDA TUBE
+ ANDIM &80 ;Returns NZ if tube present, EQ if not
+TUBCHX RTS
+
+
+
+BUGFIX
+
+;When the 6850 counter divide bits are reset, it
+;is possible for the SERPROC to get out of synch.
+;for a few bits. This has the effect of corrupting
+;the first character of the first block of a SAVE,
+;or the first character of ANY block during sequential
+;access (since the 6850 is reset for every block
+;during putbytes).
+; The cure is to write a dummy byte to tape at the
+;start of a SAVE, and at the start of every block
+;during putbytes. This must be done by polling, 
+;since there must be a period of high-tone after
+;the dummy byte, which is difficult to accomplish
+;if the 6850 is interrupting all the time.
+; BUGFIX is thus called after the SERPROC is set
+;and before the 6850 is set to interrupt during
+;a block write operation.
+
+ LDAIM SERON
+ STA SERPRC ;Set SERPROC on
+ JSR CRESET ;Reset 6850 to be on safe side
+ LDAIM &10
+ JSR CHPINT ;Set 6850 at appropriate clock rate
+ 
+BUGLP JSR ESCAPE
+ LDA STATUS
+ ANDIM &02 ;Ready to TX ?
+ BEQ BUGLP ;Nope -> loop
+ LDAIM &AA
+ STA PORT ;Shove out the dummy byte
+CHKHXX
+TINIT0
+ RTS
+
+
+END
+
+ [ $Tutu
+ ! 0,"There are ":CC:(:STR:(&FC00-.)):CC:" byte(s) padding (should be 1)"
+ ]
+
+; pad with zero bytes to ensure ROM CRCs consistent
+ % &100
+
+ < 1
+
+ LNK MOS99

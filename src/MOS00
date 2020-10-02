@@ -1,0 +1,174 @@
+
+ TTL VDU File -> MOS00
+ OPT &01
+
+;
+; MASM options
+;
+OPNEWP * &04 ;new page
+OPPON * &01 ;print on
+OPPOFF * &02 ;print off
+;
+; module print selections
+;
+DEFOPT * OPPON:OR:OPNEWP ;default option for MOS code
+MOS00 * DEFOPT
+MOS01 * DEFOPT
+MOS02 * DEFOPT
+MOS03 * DEFOPT
+MOS04 * DEFOPT
+MOS05 * DEFOPT
+MOS06 * DEFOPT
+MOS07 * DEFOPT
+MOS08 * DEFOPT
+
+MOS10 * DEFOPT
+MOS11 * DEFOPT
+
+ OPT MOS00
+
+WARGS * &00F0
+SEIWKA * &00FA
+SEIWKB * &00FB
+
+;Last updated 01/08/82
+
+;01/08/82  Intro of SEIWKA and SEIWKB to fix palette IRQ problem
+;01/05/82  Order of variables changed. Pseudo op # used.
+;21/04/82  QPOSN removed completely
+;25/03/82  Low byte of BEGSCN replaced with BYTCH (it was always zero)
+;04/02/82  QPOSN moved to MOS
+;07/01/82  VDUVEC removed (to $222 in MOS)
+;14/11/81  DOTS removed
+
+;VARIABLES, NOT ZERO PAGE
+
+;CHARACTER FONTS
+
+HFONT * &BF00
+HFMSB * /(HFONT ) ;MSB of HFONT
+
+;VARIABLES PROPER
+
+
+VARBLE * &0300
+V * VARBLE ;An abbreviation
+
+
+ ^ VARBLE
+
+GWLCOL # &02 ;Row no. of LH margin of graphics window (internal repn.)
+GWBROW # &02 ;Row no. of bottom margin of graphics window (internal repn.)
+GWRCOL # &02 ;Col no. of RH margin of graphics window (internal repn.)
+GWTROW # &02 ;Row no. of top margin of graphics window (internal repn.)
+TWLCOL # &01 ;Column number of left margin of text window
+TWBROW # &01 ;Row number of bottom margin of text window
+TWRCOL # &01 ;Column number of right margin of text window
+TWTROW # &01 ;Row number of top margin of text window
+ORGX # &02 ;Screen origin (external represntation)
+ORGY # &02
+GCSX # &02 ;Graphics cursor (external representation)
+GCSY # &02
+OLDCS # &04 ;Old graphics cursor
+CSX # &01 ;Text cursor posn (screen relative)
+CSY # &01
+YLINE # &01 ;Offset from ZMEMG for current graphics point
+QQ # &08 ;Queue
+QEND # &01 ;Last byte in queue
+GCSIX # &02 ;Graphics cursor (internal representation)
+GCSIY # &02
+VDUWS # &22 ;Workspace for VDU
+CSPOSN # &02 ;Memory of top byte of character at cursor
+PWWDTH # &02 ;Text window width in bytes
+BEGSCN # &01 ;MSByte of Lowest byte address displayed
+BYTCH # &01 ;No bytes per character displayed
+TOPSCN # &02 ;Address of top left byte on screen
+BYTROW # &02 ;Bytes per row
+BYTSCN # &01 ;Bytes used for screen display
+MODE # &01 ;Current VDU mode (0..7)
+MEMODE # &01 ;Memory map type (0..4)
+;STATS # $01 ;Individual bits used for various things - see docn. for details
+FTCOLF # &01 ;Next four must be in this order Foreground text colour
+BTCOLF # &01 ;Background text colour
+FGCOLF # &01 ;Foreground graphics colour
+BGCOLF # &01 ;Background graphics colour
+GPLFMD # &01 ;Current graphics foreground plot colour
+GPLBMD # &01 ;Current graphics background plot colour
+JVEC # &02 ;Jump vector for JMIs
+CSTEMP # &01 ;Cursor start register of 6845
+NCOLOR # &01 ;No. colours available (=0 for TTX)
+NPIX # &01 ;No. pixels per byte (=0 for non-graphics mode)
+MASKL # &01 ;Mask for left most pixel in byte
+MASKR # &01 ;Mask for right most pixel in byte
+PCSX # &01 ;Print cursor x position
+PCSY # &01 ;Print cursor y position
+CHCSR # &01 ;Character which is the displayed cursor on print line
+FNTFLG # &01 ;Default font flags, 0 for hard font, p.1=b6 .. p.7=b0
+PGSFNT # &07 ;Page addresses for the soft font $20 - $3F & etc.
+PARROT # &10 ;Storage of 16 physical colours
+VEND # &00 ;End of the variables
+
+; ************************** MANIFESTS ****************************
+
+
+ ^ VDUWS
+DLEWS # &08 ;Workspace for DLE
+DLENLN # &01
+
+ ^ VDUWS
+CANWS # &04 ;Workspace for CAN
+CDELTA # &04
+
+ ^ VDUWS
+USWS # &02 ;Workspace for US
+
+ ^ VDUWS
+SSWS # &02 ;Workspace for soft scrolling
+
+ ^ VDUWS
+APCS1 # &04 ;Workspace for anomalous printing
+
+ ^ VDUWS
+READWS # &08 ;Intermediate bit pattern formed during READCH
+
+ ^ VDUWS
+RPXLWS # &04 ;Workspace for read pixel
+
+;For graphics in general
+
+ORG * ORGX ;Graphics origin
+GCSR * GCSX ;Graphics external cursor
+GCSIR * GCSIX ;Graphics internal cursor
+NEWPT * QEND-&03 ;New point introduced by call to routine. Multiple of 8 !
+PLMODE * QEND-&04 ;Plot mode
+
+;Plotting lines
+
+ ^ VDUWS
+LDELTA # &04 ;DeltaX & DeltaY
+LSTART # &04 ;Start point for line
+HEND # &02 ;Horizontal end point
+D2JVEC # &02 ;Jump vector for D2
+DOTFLG # &01 ;Dotted line flag
+LPARMS # &06 ;Parameters for line drawing
+
+;Plotting triangles
+
+ ^ VDUWS
+HPARMS # &06
+HSTART # &04
+HDIREC # &01
+SPARMS # &06
+SSTART # &04
+SDIREC # &01
+GCSTMP # &08
+
+HDELTA * HPARMS+&02
+SDELTA * SPARMS+&02
+TRINLN * QQ
+
+;Teletext temp variable for byte hidden by input cursor
+
+TTXTMP * VDUWS+&10 ;as nothing available in TTX uses this much storage
+
+ LNK MOS01

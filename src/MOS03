@@ -1,0 +1,512 @@
+
+  TTL VDU File - MOS03
+ OPT MOS03
+
+;Last revision 15/06/82
+
+;15/06/82  Route ALL unknown plot commands thru VDUVEC, even in text modes
+;02/06/82  ETB mod to redef of ASCII
+;27/05/82  DCC (programme palette) recoded
+;05/05/82  Delete anomalous TAB
+;          Move NAK to MOS02
+;01/05/82  Recoded to allow for forward queueing & change in variable order
+;24/04/82  ETB Function 1 (hide/display cursor) coded
+;19/04/82  DCC & DCCB moved for byte saving
+;15/04/82  NPCOL used to fix VDU 19,0,20,0,0,0 bug
+;24/03/82  DLE leaves graphics cursor alone
+;          ETB to check if font exploded before reprogramming fonts 1-3
+;21/03/82  DLE to account for non-zero origins
+;22/01/82  EIG to EIGABS in graphics window definition
+;07/01/82  Catch illegal VDU 23,n,.... commands
+;15/11/81  Vertical sync user adjustment (Paul)
+
+;INDIVIDUAL ROUTINES
+
+
+;DLE ($10) Clear graphics area
+
+FFANOM JSR RSAN
+DLE LDA NPIX ;Non-graphics ?
+ BEQ DLEX
+ LDX BGCOLF ;Clear to the background colour
+ LDY GPLBMD ;Use the background colour mode
+ JSR SETZG ;Set this up
+ LDXIM GWLCOL-V ;Copy window params from GWTROW ...
+ LDYIM DLEWS-V ;Copy window parameters to DLEWS
+ JSR COPY8
+ SEC  ;How many lines to do ?
+ LDA GWTROW
+ SBC GWBROW
+ TAY
+ INY  ;Increment this to distinguish between 0 & 255
+ STY DLENLN ;Line counter
+DLEA LDXIM DLEWS+&04-V ;Point to R.H. point, containing valid Y address
+ LDYIM DLEWS-V ;Point to L.H. point, with irrelevant Y address
+ JSR HPLOTA ;Clear the current line
+ LDA DLEWS+&06 ;Decrement the current line number
+ BNE DLEB
+ DEC DLEWS+&07
+DLEB DEC DLEWS+&06
+ DEC DLENLN
+ BNE DLEA
+DLEX RTS
+
+;DC1 ($11) Programme foreground
+;or background colours for text
+
+DCA LDYIM &00 ;Used for storing
+ BEQ DCABA ;(branch always taken)
+
+;DC2 ($12) Programme foreground
+;or background colours for graphics
+;QEND-1=mode
+;QEND =logical colour
+
+DCB LDYIM &02
+DCABA LDA QEND ;Get logical colour
+ BPL DCABB ;Foreground ?
+ INY  ;No, then point to background locations
+DCABB AND NCOLOR
+ STA ZTEMP
+ LDA NCOLOR ;Sneaky offset method
+ BEQ DCABX ;Branch for TTX
+ ANDIM &07 ;to FCOLTB. A=table base
+ CLC
+ ADC ZTEMP ;(A) = offset +1
+ TAX
+ LDAAX FCOLTB -&01
+ STAAY FTCOLF ;(Y) set above to 0..3
+ CPYIM &02 ;Graphics ?
+ BCS DCBAC ;Yes, then set up GPLMDE
+ LDA FTCOLF ;No, then set ZORA &
+ EORIM &FF ;ZEOR
+ STA ZEOR ;ZEOR = NOT foreground
+ EOR BTCOLF ;ZORA = ZEOR EOR back
+ STA ZORA
+DCABX RTS
+DCBAC LDA QEND-&01
+ STAAY GPLFMD -&02 ;Y=2 or 3 (for fore or background) mode
+ RTS
+
+DCTTX LDAIM TTXBCL ;TTX load with a particular byte ($20)
+ STA BTCOLF ;Used only for screen clears
+ RTS
+
+;DC3 ($13) is below this routine
+
+
+;DC4 ($14) Set default physical
+;- logical relations
+;Default back & foreground clrs
+
+DCD LDXIM &05 ;Programme all full colours & modes to zero
+ LDAIM &00
+DCDA STAAX FTCOLF
+ DEX
+ BPL DCDA
+ LDX NCOLOR ;Set foreground colours & ZORA & ZEOR
+ BEQ DCTTX ;Branch for TTX
+ LDAIM &FF
+ CPXIM &0F
+ BNE DCDB
+ LDAIM INVSXT ;Don't invert flashing bit
+DCDB STA FTCOLF
+ STA FGCOLF
+ EORIM &FF
+ STA ZORA
+ STA ZEOR
+ STX QEND-&04 ;set logical colour := NCOLOR
+ CPXIM &03 ;How many colours?
+ BEQ DCDLA
+ BCC DCDLI
+
+;16 colours - one to one
+
+ STX QEND-&03
+DCDLF JSR DCC
+ DEC QEND-&03
+ DEC QEND-&04
+ BPL DCDLF
+ RTS
+
+
+;4 colour, use shift right of $07
+
+DCDLA LDXIM &07
+ STX QEND-&03
+DCDLH JSR DCC
+ LSR QEND-&03
+ DEC QEND-&04
+ BPL DCDLH
+ RTS
+
+;2 colour (TTX also executes this rouine)
+
+DCDLI LDXIM &07 ;Programme log.=1, phys.=7
+ JSR DCDLJ
+ LDXIM &00 ;Programme log.=0, phys.=0
+ STX QEND-&04
+
+DCDLJ STX QEND-&03 ;& fall through to ....
+
+;DC3 ($13) - Programme logical/
+;physical colour relation
+
+;Logical colour in QEND-4
+;Physical colour in QEND-3
+
+DCC PHP
+ SEI
+ LDA QEND-&04 ;Determine logical colour
+ AND NCOLOR
+ TAX
+ LDA QEND-&03 ;Get physical colour
+DCC1 ANDIM NPCOL ;mask off confusing bits
+ STAAX PARROT ;Write to list
+ TAY
+ LDA NCOLOR
+ STA SEIWKA
+ CMPIM &03
+ PHP ;Needed later
+ TXA ;(A)=logical colour
+DCCALA RORA  ;determine start position =Logi*16/(ncolor+1)*16
+ ROR SEIWKA
+ BCS DCCALA
+ ASL SEIWKA
+ TYA ;Get physical colour
+ ORA SEIWKA
+ TAX ;Byte to be given to VPROC1
+ LDYIM &00 ;Initialise loop counter
+
+DCCALB PLP ;Does NCOLOR=3?
+ PHP
+ BNE DCCALC ;No?, then skip
+ ANDIM &60 ;If b5 & b6 both set or clear, don't invert them
+ BEQ DCCALD
+ CMPIM &60
+ BEQ DCCALD
+ TXA
+ EORIM &60
+ BNE DCCALC ;(branch always taken)
+DCCALD TXA
+DCCALC JSR MVPRC1 ;Save (X) & (Y)
+ TYA ;Loop counter
+ SEC
+ ADC NCOLOR
+ TAY
+ TXA ;Restore (A)
+ ADCIM &10 ;c=0
+ TAX
+ CPYIM &10
+ BCC DCCALB
+ PLP
+ PLP
+ RTS
+
+
+;OSWORD call to programme palette
+
+PRPAL
+ PHP
+ AND NCOLOR ;Get logical colour
+ TAX
+ INY ;(Y):=1
+ LDAIY WARGS ;Load physical colour
+ JMP DCC1
+
+;SYN ($16) Change mode
+
+SYN LDA QEND ;Get the mode
+ JMP CHMODE
+
+;ETB ($17) Programme soft font
+;Programme character font to user definition
+;Character to be programmed in Q+08, top row in Q+07
+;through to bottom row in Q+00
+
+ETB LDA QEND-&08 ;Is it the soft font ?
+ CMPIM &20 ;Is it a printable character ?
+ BCC ETBD
+ PHA  ;Yes?, then get group
+ LSRA
+ LSRA
+ LSRA
+ LSRA
+ LSRA
+ TAX  ;Flag set ?
+ LDAAX BITTBL
+ BIT FNTFLG
+ BNE ETBB ;Yes?, then just copy defn.
+
+
+ ORA FNTFLG ;Set flag
+ STA FNTFLG
+ TXA  ;Copy page to soft font
+ ANDIM &03
+ CLC
+ ADCIM HFMSB ;Point to hard font
+ STA ZTEMPC +&01
+ LDAAX PGSFNT -&01 ;Point to soft font
+ STA ZTEMPB +&01
+ LDYIM &00
+ STY ZTEMPB
+ STY ZTEMPC
+ETBC LDAIY ZTEMPC
+ STAIY ZTEMPB
+ DEY
+ BNE ETBC
+ETBB PLA
+ JSR CHADDR ;Point (ZTEMPC) to soft font
+ LDYIM &07 ;& copy character into the font
+ETBA LDAAY QEND-&07
+ STAIY ZTEMPC
+ DEY
+ BPL ETBA
+ RTS
+ PLA
+ETCX RTS
+
+JMIV25
+ LDA PLMODE
+ CLC
+; C=0
+JMIV23  ;C=1
+ JMI VDUVEC
+;
+ETBD CMPIM &01 ;Valid command ?
+ BCC ETD
+; C=1
+ BNE JMIV23 ;No?, then jump indirect to user vector with C=1
+;
+ JSR ANOMQ ;Anom. printing?  ~~~ FUNCTION 1 Turn cursor on/off ~~~
+ BNE ETCX ;Yes?, then don't do it
+ LDAIM &20
+ LDY QEND-&07 ;Hide(0) or display(1)?
+ BEQ ETCB
+ETCA LDA CSTEMP ;RESTORE CURSOR
+ETCB LDYIM &0A
+ BNE CRTCPA ;Programme the 6845 without saving to CSTEMP
+
+ETD LDA QEND-&06 ;~~~ FUNCTION 0 Programme 6845 register #(Q+7) WITH (Q+6) ~~~
+ LDY QEND-&07
+
+CRTCP CPYIM &07
+ BCC CRTCPA ;[register<7, so not register 7 or 10]
+ BNE CRTCPC ;[not vertical sync position]
+
+ ADC VERTIC ;apply user adjustment (c=1)
+
+CRTCPC CPYIM &08
+ BNE CRTCPD ;[not interlace mode register]
+ ORAIM &00; interlace mode register
+ BMI CRTCPD ;[do not alter interlace (probably teletext)]
+;
+ EOR INTERL ;modify interlace
+CRTCPD CPYIM &0A ;Cursor start register ?
+ BNE CRTCPA ;[not cursor start register]
+ STA CSTEMP ;Yes?, then record this for separate cursors
+ TAY
+ LDA STATS ;Are cursors joined ?
+ ANDIM &20
+ PHP  ;(very nasty coding, but it is short)
+ TYA
+ LDYIM &0A
+ PLP
+ BNE CRTCPB ;Yes, then don't write to 6845
+CRTCPA STY CRTCA ;Address said register
+ STA CRTCD ;and store data therein
+CRTCPB RTS  ;(Referenced from EM)
+
+;ESC ($1B) does bugger all
+
+;Jump table points to the RTS at ACK
+
+;EM ($19) - Plotting
+
+EM LDX NPIX ;Filter out non-graphics modes
+ BEQ JMIV25 ;[text mode]
+ JMP EMA ;Jump to graphics routines
+
+;Hardware scroll down
+;Doesn't touch cursor
+
+; These routines return z=0
+
+HSCRDN LDX TOPSCN ;Subt. BYTROW from TOPSCN
+ LDA TOPSCN+&01
+ JSR SUBROW
+ BCS NEWTOP ;Wraparound? No?, then done
+ ADC BYTSCN ;Yes?, then add screen length
+ BCC NEWTOP ;(branch always taken)
+
+HSCRUP LDX TOPSCN ;Add BYTROW to TOPSCN
+ LDA TOPSCN+&01
+ JSR ADDROW
+ BPL NEWTOP ;Wraparound?
+ SEC
+ SBC BYTSCN ;Yes?, then subtract off screen length
+NEWTOP STA TOPSCN +&01
+ STX TOPSCN
+ LDYIM &0C ;Prog. START of 6845
+ BNE AXCRTA ;(branch always taken)
+
+;SUB ($1A) - Sets default text
+;& graphics windows.
+;Homes both cursors
+;Sets graphics origin to (0,0)
+
+;Clear all window parameters,
+;Both cusors, & gr. origin
+
+SUB LDAIM &00
+ LDXIM VDUWS+&04-GWLCOL ;THIS VALUE LIKELY TO CHANGE !
+SUBA STAAX GWLCOL
+ DEX
+ BPL SUBA
+
+;Set other parameters
+
+ LDX MODE ;Get no. of char. cols.
+ LDYAX PCOLS ;How many columns ?
+ STY TWRCOL ;Default text window
+ JSR SETPWW ;Set the text width
+ LDYAX PROWS ;Get no. char. rows
+ STY TWBROW ;Default text window
+ LDYIM &03 ;GRAPHICS WINDOW Top row
+ STY QEND
+ INY
+ STY QEND-&02 ;right column
+ DEC QEND-&01 ;now = $FF
+ DEC QEND-&03 ;now = $FF
+ JSR CAN ;Transfer to window & convert co-ords
+ LDAIM &F7 ;Clear bit 3 of STATS (default windows set)
+ JSR STTAND
+ LDX TOPSCN ;Programme cursor
+ LDA TOPSCN+&01  ;to top L.H. byte
+CSDSPA STX CSPOSN
+ STA CSPOSN +&01
+ BPL CSDSP
+ SEC
+ SBC BYTSCN
+CSDSP STX ZMEMT
+ STA ZMEMT +&01
+ LDX CSPOSN
+ LDA CSPOSN +&01
+ LDYIM &0E
+AXCRTA PHA
+ LDA MODE ;Is it teletext ?
+ CMPIM &07
+ PLA
+ BCS AXCRTB
+ STX ZTEMP ;No?, then divide by 8
+ LSRA
+ ROR ZTEMP
+ LSRA
+ ROR ZTEMP
+ LSRA
+ ROR ZTEMP
+ LDX ZTEMP
+ JMP AXCRTC
+;For TTX, fiddle the high address lines
+AXCRTB SBCIM &74 ; Carry already set here
+ EORIM &20
+;Write (A) to reg. (Y) of 6845
+;& (X) to reg. (Y)+1
+
+AXCRTC STY CRTCA ;Access reg. (Y)
+ STA CRTCD ;Store MSB
+ INY  ;Access reg. (Y)+1
+ STY CRTCA
+ STX CRTCD ;Store LSB
+ RTS
+
+;CAN ($18) Define graphics area
+
+;QEND-7 = L.H. margin  = GWLCOL Low byte 1st
+;QEND-5 = Bottom row   = GWBROW
+;QEND-3 = R.H. margin  = GWRCOL
+;QEND-1 = Top row      = GWTROW
+
+CAN JSR CANB ;Swap graphics cursor with innocuous bytes in WS
+ LDXIM QEND-&07-V
+ LDYIM CDELTA-V
+ JSR TRISA ;Calculate window differences to CDELTA
+ ORA CDELTA+&01 ;(A) returns with CDELTA+3= DeltaY, so OR with DeltaX
+ BMI CANB ;If either is -ve, then illegal window
+ LDXIM QEND-&03-V ;Convert window to Ico-ords
+ JSR EIGABS
+ LDXIM QEND-&07-V
+ JSR EIGABS
+ LDA QEND-&04 ;Are both lower margins +ve ?
+ ORA QEND-&06
+ BMI CANB ;No?, then illegal
+ LDA QEND ;Is Y valid ?
+ BNE CANB ;Only if MSB is zero
+ LDX MODE ;Is X valid ?
+ LDA QEND-&02 ;Divide by 8 & see if > no. of character cols
+ STA ZTEMP
+ LDA QEND-&03 ;LSB of RH margin -1
+ LSR ZTEMP
+ RORA
+ LSR ZTEMP
+ BNE CANB
+ RORA
+ LSRA
+ CMPAX PCOLS
+ BEQ CANA
+ BPL CANB
+CANA LDYIM GWLCOL-V ;Copy to window
+ LDXIM QEND-&07-V ;From Q
+ JSR COPY8
+CANB LDXIM GCSR-V ;Swap GCSR with CANWS, as EIGABS corrupts this
+ LDYIM CANWS-V
+ JMP SWAPF
+
+;Set printer window width
+;Char. width in A
+;Mode in X
+
+SETPWW INY
+ TYA
+ LDYIM &00
+ STY PWWDTH +&01 ;Clear MSB
+ STA PWWDTH
+ LDA BYTCH ;How many times to shift PWWDTH left ?
+ LSRA
+ BEQ SETPWC ;TTX?
+SETPWA ASL PWWDTH
+ ROL PWWDTH +&01
+ LSRA
+ BCC SETPWA
+SETPWC RTS  ;This used to be FSFAIL & ESCFL & ESCBB as well
+
+;GS ($1D) Define graphics origin
+
+;GSA Define graphics origin
+;The co-ordinates are in external 16 bit space. This does not
+;move the windows, but does move the graphics cursors
+
+GS LDXIM QEND-&03-V
+ LDYIM ORG-V ;Copy the new origin (external co-ords) to ORGY..
+ JSR COPYF
+ JMP IEG ;Update EXTERNAL cursor
+
+;DEL ($7F) Delete previous char
+
+DEL JSR BS ;Move back 1 character
+ JSR ANOMQ
+ BNE DELA
+ LDX NCOLOR
+ BEQ PTTXSP ;TTX space
+ STA ZTEMPC ;(A)=0 from ANOMQ
+ LDAIM HFMSB +&01 ;Point to hard font version of space
+ STA ZTEMPC +&01
+ JMP VDUPRB
+PTTXSP LDAIM &20 ;Print TTX space
+ JMP PTTX ;OK as (X)=0
+DELA LDAIM &7F ;Point to DEL, only unprintable char. in hard font =$FF...$FF
+ JSR CHADDR
+ LDX BGCOLF ;Force this to be graphics background colour
+ LDYIM &00 ;Mode is STORE
+ JMP PRANC
+ LNK MOS04

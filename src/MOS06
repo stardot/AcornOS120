@@ -1,0 +1,297 @@
+
+ TTL VDU File - MOS06
+ OPT MOS06
+
+;Last revision 15/05/82
+
+;15/06/82 Adjust bad plot mode indirection code
+;05/05/82 GADDR converted such that it takes only 1 table.
+;         Moved to MOS11
+;01/05/82 Recode to allow for new order of variables
+;21/04/82 Conditional assembly of start/end point double plotting.
+;22/01/82 Provide EIGABS
+;07/01/82 Put X to LSB of pointer
+
+;******* PLOTTING *******
+
+;Prologue - converts from external to internal
+;co-ords, and distinguishes between types of
+;line & triangles
+
+EMA LDXIM NEWPT-V ;Convert external to internal
+ JSR EIG ;for the 4 bytes starting at Q
+ LDA PLMODE ;Get plot mode
+ CMPIM &04 ;BASIC's MOVE command
+ BEQ EMAEX
+ LDYIM &05 ;Point to do damn' all mode (for plotting that produces no change)
+ ANDIM &03
+ BEQ EMAA ;No change, then exit
+ LSRA  ;Is it odd ?
+ BCS EMAF ;No?, then invert
+ DEY ;(Y) = 4. Point to INVERT values of table
+ BNE EMAA ;(Branch always taken)
+EMAF TAX
+ LDYAX GPLFMD
+ LDAAX FGCOLF
+ TAX
+EMAA JSR SETZG
+
+;What's to be done ?
+
+ LDA PLMODE ;Get plot mode
+;* TAY
+ BMI EXGREF ;Negative, then reference external routine
+ ASLA  ;Get type of operation
+ BPL EMAD ;Is it a line?
+ ANDIM &F0 ;Get rid of irrelevant data
+ ASLA  ;Is it point ($80, will be shifted out) ?
+ BEQ EMAC
+ EORIM &40 ;Triangles?
+ BEQ EMAG
+ PHA
+ JSR EMAEY ;Copy newpoint to internal cursor
+ PLA
+ EORIM &60 ;SPLOT
+ BEQ EME ;($60=$20 EOR $40)
+ CMPIM &40 ;SPLOT looking for b/g ($60 = $40 EOR $60 EOR $40)
+ BNE EXGREF
+ LDAIM &02 ;This is what is EORed with the flag register
+ STA ZTEMPB
+ JMP SCHEAT
+
+EMAG JMP EMC ;Jump to triangles
+EXGREF
+;* TYA ;Restore plot mode to A
+ JMP JMIV25
+
+EME STA ZTEMPB ;(A)=0 .This is what is EORed with the flag register
+ JMP SPLOT ;Fill plot
+
+;Set up ZGORA & ZGEOR, using
+;(X)=Full colour byte
+;(Y)=Plot mode
+
+SETZG TXA
+ ORAAY TBZGOO
+ EORAY TBZGEO
+ STA ZGORA
+ TXA
+ ORAAY TBZGOE
+ EORAY TBZGEE
+ STA ZGEOR
+ RTS
+
+;Plot a line or curve
+
+EMAD ASLA  ;Is it a line or curve ?
+ BMI EXGREF ;Curve, so reference user routine
+ ASLA
+ ASLA  ;It's a line, so is the first point to be plotted again?
+ BPL EMAB ;No, then skip this, as routine plots both anyway
+;
+ [ STARTP=0
+; plot start point twice
+ JSR WPLOTA ;Address and plot cursor if in window
+ |
+; plot end point twice
+ JSR WPLOT
+ ]
+;
+EMAB JSR LINE
+ JMP EMAEX
+
+;Plot a point
+
+EMAC JSR WPLOT ;Plot only if it is in window
+;SPLOTY requires that EMAEX preserves carry
+EMAEX JSR SWAPB ;Swap current cursor with last cursor
+EMAEY LDYIM GCSIR-V ;Copy new point to Icursor
+EMAEZ LDXIM NEWPT-V
+ JMP COPYF
+
+;WPLOT windows point at NEWPT and plots it if inside
+
+WPLOTA LDXIM GCSIR-V ;WPLOTA does this to current graphics cursor
+ JSR GADDV ;WPLOTB does this for any point pointed to by X
+ BEQ PLOT
+ RTS
+WPLOT JSR GADDW ;Window & address NEWPT
+ BNE PLOTEX ;Out of window, then exit
+
+;otherwise fall through to .....
+
+;PLOT plots a point
+;Requires LINEY, ZMEMG, ZGORA, ZGEOR
+;Uses ZTEMP as work byte
+;Alters 1 byte on screen
+
+PLOT LDY YLINE
+PLOTS LDA ZMASK
+ AND ZGORA
+ ORAIY ZMEMG
+ STA ZTEMP
+ LDA ZGEOR
+ AND ZMASK
+ EOR ZTEMP
+ STAIY ZMEMG
+PLOTEX RTS
+
+PLOTFF LDAIY ZMEMG ;Plots a full byte
+ ORA ZGORA
+ EOR ZGEOR
+ STAIY ZMEMG
+ RTS
+
+;WIND windows the point at V+(X), as follows
+;If the point is below the lower limit, the window is 1
+;If the point is above the upper limit, the window is 2
+;If the point is within both limits, the window is 0
+;The total window, returned in A (with z set appropriately)
+;is 4 times the window in the Y direction, plus the window
+;in the X direction.
+;The routine uses ZTEMP as a work byte
+;All windows, as specified by GWxxxx are reckoned as inclusive,
+;with the high byte last.
+;The order of the windows in RAM is reckoned as follows
+;GWLCOL, GWBROW, GWRCOL, GWTROW
+
+WINDCS LDXIM GCSIR-V ;Special entry point to window graphics cursor
+
+WIND LDYIM &00 ;Initialise result
+ STY ZTEMP
+ LDYIM &02 ;Do the Y co-ords
+ JSR WINDA
+ ASL ZTEMP ;Mult. the Y window by 4
+ ASL ZTEMP
+ DEX
+ DEX
+ LDYIM &00 ;Do the X window
+ JSR WINDA
+ INX  ;Restore X
+ INX
+ LDA ZTEMP
+ RTS
+
+;Subtract margin from point to obtain sign of difference
+
+WINDA LDAAX V+&02 ;(LSB)
+ CMPAY GWLCOL ;(LSB of lower limit)
+ LDAAX V+&03 ;(MSB)
+ SBCAY GWLCOL+&01 ;(MSB of lower limit)
+ BMI WINDAA
+ LDAAY GWRCOL ;(LSB of upper limit)
+ CMPAX V+&02 ;(LSB)
+ LDAAY GWRCOL+&01 ;(MSB of upper limit)
+ SBCAX V+&03 ;(MSB)
+ BPL WINDAB ;Is this <= upper limit ?
+ INC ZTEMP
+WINDAA INC ZTEMP
+WINDAB RTS  ;No longer referenced from EIG, incidentally, saving TWO WHOLE BYTES !!
+
+;EIGABS in some embarassment is to provide EIG in ABSOLUTE co-ords
+
+EIGABS LDAIM &FF
+ BNE EIGC ;(branch always taken)
+
+;Convert external to internal co-ordinates
+
+;EIG converts from external co-ords (either relative or abs)
+;and produces internal ones in situ. No windowing is done.
+;Requires (X) = the offset from V of the points to be converted
+;b2 of PLMODE = 0 for relative co-ords (add the Ecursor)
+;               1 for absolute co-ords (add the origin)
+;GCSR, ORGX, ORGY as usual
+;Writes the transformed co-ordinates from whence they came
+;Also writes new point to external cursor (GCSX,GCSY)
+;hence in triangle relative mode, the points are relative
+;to the last specified, not the original cursor
+
+;a) Add the cursor to current posn. if relative
+;& add origin in both cases
+
+EIG LDA PLMODE
+EIGC STA ZTEMP
+ LDYIM &02 ;Do this for Y co-ordinates
+ JSR EIGS
+ JSR DIVAXT ;1024 points vertically
+ LDYIM &00
+ DEX
+ DEX
+ JSR EIGS ;Do this for X co-ordinates
+
+;b) scale down by the necessary factor
+;(EIGS has already divided by 2)
+
+ LDY NPIX ;How many pixles ?
+ CPYIM &03
+ BEQ EIGA ;4?, then divide by 4
+ BCS EIGB ;8?, then divide by 2
+ JSR DIVAXT ;2?, then divide by 8
+EIGA JSR DIVAXT
+EIGB LDA MEMODE ;Is it a 10K mode?
+ BNE DIVAXT ;YES, then another divide by 2
+ RTS ; NO, then skip
+
+EIGS CLC
+ LDA ZTEMP ;Test b2 of plot mode, for rel./abs.
+ ANDIM &04
+ BEQ EIGSA ;Clear, so relative ( & skip )
+ LDAAX V+&02 ;(LSB) ~~~ ABSOLUTE ~~~
+ PHA
+ LDAAX V+&03 ;(MSB)
+ BCC EIGSB ;(branch always taken)
+EIGSA LDAAX V+&02 ;~~~ RELATIVE ~~~
+ ADCAY GCSR ;so add prev. cursor (LSB)
+ PHA
+ LDAAX V+&03 ;(MSB)
+ ADCAY GCSR+&01
+ CLC
+EIGSB STAAY GCSR+&01 ;Update MSB of cursor
+ ADCAY ORG+&01 ;Now add origin for both addressing modes !
+ STAAX V+&03 ;(MSB)
+ PLA  ;Pull LSByte
+ STAAY GCSR ;Update LSB of cursor
+ CLC
+ ADCAY ORG ;(LSB)
+ STAAX V+&02
+ BCC DIVAXT
+ INCAX V+&03 ;Carry into MSB if needs be
+
+;Divide this by 2 by falling through to ...
+
+DIVAXT LDAAX V+&03 ;Signed division by 2
+ ASLA  ;(Screen now 1280 by 1024)
+ RORAX V+&03
+ RORAX V+&02
+ RTS
+
+;IEG Inverse of EIG. Converts Icursor to Ecursor
+
+IEG LDYIM GCSR-V ;Copy GCSIY to GCSY
+ JSR COPYFB
+ LDXIM &02 ;Convert y co-ordinates
+ LDYIM &02 ;by multiplying by 4
+ JSR IEGC
+ LDXIM &00 ;Convert x co-ordinates
+ LDYIM &04 ;By multiplying by 2
+ LDA NPIX ;4, or 8, depending on (NPIX)
+IEGA DEY
+ LSRA
+ BNE IEGA
+ LDA MEMODE ;Get memory map type
+ BEQ IEGC ;=1 if 10K mode
+ INY  ;in which case, multiply by another factor of two & fall through to ...
+
+IEGC ASLAX GCSR
+ ROLAX GCSR+&01
+ DEY
+ BNE IEGC
+ SEC  ;Now subtract off origin to give external co-ordinate
+ JSR IEGD
+ INX
+IEGD LDAAX GCSR
+ SBCAX ORG
+ STAAX GCSR
+ RTS
+
+ LNK MOS07

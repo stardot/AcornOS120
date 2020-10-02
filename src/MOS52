@@ -1,0 +1,533 @@
+
+; MOS52
+ TTL MOS52         Sound generator
+ OPT MOS52
+;(c) 1981 ACORN Computers Limited
+;BBC Microcomputer Machine Operating System (MOS)
+;Change record:
+;Prototype version    14/1/82
+;Author(s):
+;PBM    Peter Miller
+;Internal variable allocation   $0800 to $08C0
+ENV * ENVEL ;envelope table    16 bytes per envelope
+ATTN * SNDWRK+&04 ;current attenuation
+EPERD * ATTN +&04 ;current envelope period
+SNOTE * EPERD +&04 ;base note
+NPERD * SNOTE +&04 ;the current frequency envelope period 0-3
+NCONT * NPERD +&04 ;number of ticks left in current frequency period
+DUR * NCONT +&04 ;remaining number of ticks in the current note
+DRDIV * DUR +&04 ;division of 1/100 sewc to 1/20 sec
+ENVLP * DRDIV +&04 ;current envelope ( TIMES 16)
+SCONT * ENVLP +&04 ;number of 1/100th secs before next envelope tick
+WAIT * SCONT +&04 ;channel waiting for sWATGO flag
+OLDNTE * WAIT +&04 ;current note in chip
+NTADD * OLDNTE +&04 ;current offset from base note
+
+
+NOWAT * NTADD +&08 ;number of other channels required for chord
+ATINC * NOWAT +&01 ;current rate of attn change
+PEAK * ATINC +&01 ;peak of amplitude envelope
+WATGO * PEAK +&01 ;flag <>0 => play chord
+FRACT * WATGO +&01 ;fractional part of current note
+PRDL * FRACT +&01 ;low period during convert
+PRDH * PRDL +&01 ;hign period during convert
+NOTDIF * PRDH +&01 ;Note difference used in interpolation
+
+FLUSH * SFLUSH -&04
+ACTIV * MACTIV -&04
+
+
+;Externally referenced data
+;ACTIV
+;FLUSH
+;ENVEL
+;SNDWRK
+;Externally referenced routines
+;EXAM
+;REMOV
+;Entry points
+;SNDRST   Initialise sound system, shut sound chip up
+;         Acc,X,Y ,P destroyed
+;SNDIRQ   Service entry point 1/100th second
+;         only use after initialisation
+;         Acc,X ,Y and P destroyed
+;;         A,X,P preserved, Y set to zero on exit
+
+
+MINATN    ;set minimum attenuation
+ LDAIM &04
+ STAAX EPERD
+ LDAIM &C0
+
+
+UPATN  ;update attenuation
+ STAAX ATTN
+;
+; shut up mode ?
+;
+ LDY SHUTUP
+ BEQ NOISY ;[sound allowed]
+; sound suppressed
+ LDAIM &C0 ;force minimum attenuation
+NOISY
+;
+ SEC
+ SBCIM &40 ;convert signed to unsigned number
+ LSRA
+ LSRA
+ LSRA  ;shift top four bits into low nibble
+ EORIM &0F ;invert for correct output
+ ORAAX CHAN ;add channel specification
+ ORAIM &10 ;select odd register (attenuation)
+;fall into the send routine
+SNDOUT
+SEND
+ PHP
+SENDX  ;entered by code which has already done a PHP
+ SEI
+ LDYIM &FF
+ STY &FE43
+ STA &FE4F
+ INY
+ STY &FE40
+ LDYIM &02
+SWAIT
+ DEY
+ BNE SWAIT
+ LDYIM &08
+ STY &FE40
+ LDYIM &04
+SWAT2
+ DEY
+ BNE SWAT2
+ PLP
+ RTS
+RCHAN
+CHAN * RCHAN -&04
+ = &E0
+ = &C0
+ = &A0
+ = &80
+
+
+HENDS
+ JMP ENDSW ;finished all envelope processing
+
+SNDIRQ
+ LDAIM ZERO
+ STA WATGO
+ LDA NOWAT
+ BNE MAN2
+ INC WATGO
+ DEC NOWAT
+MAN2
+ LDXIM &08 ;X always contains current channel
+MNLOP
+ DEX ;first real channel is 3
+ LDAAX ACTIV ;check if channel X is doing anything
+ BEQ HENDS ;[channel not active so take quick route]
+ LDAAX FLUSH
+ BMI MAN8 ;[must abort current note]
+ LDAAX DUR
+ BNE MAN10 ;[note finished]
+MAN8
+ JSR NXTNT ;[get new note from queue if it exists]
+MAN10
+ LDAAX DUR
+ BEQ MAN13 ;next note now
+ CMPIM &FF
+ BEQ MAN12
+ DECAX DRDIV
+ BNE MAN12 ;[not 1/20th sec tick]
+ LDAIM &05
+ STAAX DRDIV ; set counter to wait for further 1/20th sec
+ DECAX DUR
+ BNE MAN12
+MAN13
+ JSR NXTNT ;try to get a new note
+MAN12
+ LDAAX SCONT
+ BEQ MAN11
+ DECAX SCONT ;dec envelope scaling counter
+ BNE HENDS ;[not time for new envelope tick]
+MAN11
+ LDYAX ENVLP ;get envelope offset into Y
+ CPYIM &FF 
+ BEQ HENDS
+ LDAAY ENV ;get first envelope parameter
+ ANDIM &7F ;mask off sweep repeat bit
+ STAAX SCONT ;set up scaling counter again
+ LDAAX EPERD ;envelope period
+ CMPIM &04 ;check for 'finished' period
+ BEQ ENDEV ;[no longer in middle of envelope]
+;
+ LDAAX EPERD
+ CLC
+ ADCAX ENVLP ;get offset to current amplitude envelope parameters
+ TAY  ;ENV+7,Y now point to attninc rate and sENV+11 to attnlevel
+ LDAAY ENV+&0B ;atenuation level
+ SEC
+ SBCIM &3F
+ STA PEAK ;temp data for following calculations
+ LDAAY ENV+&7 ;amount by which attenuation is changed each tick
+ STA ATINC ;temp data for calculations
+ LDAAX ATTN
+ PHA
+ CLC
+ ADC ATINC ;add incremnet to attenuation
+ BVC OK8  ;first check for 8 bit overflow
+ ROLA  ;get sign bit into carry
+ LDAIM &3F  ;highest value
+ BCS OK8
+ EORIM &FF ; convert to bottom limit
+OK8
+ STAAX ATTN ;store as new attenuation
+ ROLA  ;the following code checks for overflow of attenuation (only a 7 bit number)
+ EORAX ATTN
+ BPL ATOK
+ LDAIM &3F
+ BCC LMATN ;[hit #3F limit]
+ EORIM &FF ;convert for bottom limit
+LMATN
+ STAAX ATTN
+ATOK
+ DEC ATINC
+ LDAAX ATTN ;the following code checks that (ATTN-PEAK)*SIGN(increment)>=0
+ SEC
+ SBC PEAK
+ EOR ATINC
+ BMI SMPER ;[attenuation has not reached limit yet]
+ LDA PEAK ;attn was too large therefore set to peak
+ STAAX ATTN
+ INCAX EPERD ;next envelope period
+SMPER   ;same envelope period
+ PLA
+ EORAX ATTN
+ ANDIM &F8
+ BEQ NNEWA ;no new chip attenuation output (hasn't changed)]
+ LDAAX ATTN
+ JSR UPATN ;update chip attenuation
+NNEWA
+ENDEV
+;frequency sweeping part of envelope
+ LDAAX NPERD
+ CMPIM &03
+ BEQ ENDSW
+ LDAAX NCONT ;number of ticks left in this frequency period
+ BNE GTPRD
+ INCAX NPERD ;next period
+ LDAAX NPERD
+ CMPIM &03 ;check for period=3 =>end of all periods
+ BNE NTLF ;[not last period]
+ LDYAX ENVLP ;the following checks for bit 8 set in the first envelope byte=> no sweep repeat
+ LDAAY ENV
+ BMI ENDSW ;[not a repeating sweep therefore jump to end]
+ LDAIM ZERO
+ STAAX NTADD ;reset amount added to note to zero for next sweep
+ STAAX NPERD ;first sweep period
+NTLF
+ LDAAX NPERD ;the following points Y to the sweep parameters of the current envelope/period
+ CLC
+ ADCAX ENVLP
+ TAY
+ LDAAY ENV+&04
+ STAAX NCONT ;number of cycles for this frequency period
+ BEQ ENDSW ;zero frequency period
+GTPRD
+ DECAX NCONT
+ LDAAX ENVLP
+ CLC
+ ADCAX NPERD
+ TAY
+ LDAAY ENV+&01 ;note increment for this frequency period
+ CLC
+ ADCAX NTADD
+ STAAX NTADD ;add increment to the note offset
+ CLC
+ ADCAX SNOTE
+ JSR CNVRT ;convert note to period and output
+ENDSW
+ CPXIM &04 ;'test channel number for zero'
+ BEQ EDUP ;[channel was zero therefore leave loop]
+ JMP MNLOP
+
+
+SNDRST
+ LDXIM &08
+;
+RLOP
+ DEX
+ JSR SCRST ;reset sound channel X
+ CPXIM &04
+ BNE RLOP
+;
+EDUP  ;end of 1/100th sec processing
+ RTS
+
+
+NXTNT
+ LDAAX EPERD ;get current amplitude period
+ CMPIM &04 ;period 4 => note has fully released
+ BEQ ELDDN
+ LDAIM &03
+ STAAX EPERD ;put note in the release phase of the envelope
+ELDDN
+ LDAAX FLUSH
+ BEQ NOFL ;[no flush has been flagged]
+ LDAIM ZERO
+ STAAX FLUSH ;clear the flush flag
+ LDYIM &04  ;the following clears all wait variables
+SWTLOP
+ STAAY WAIT +&03
+ DEY
+ BNE SWTLOP
+ STAAX DUR ;set duration to zero => note finished
+ DEY
+ STY NOWAT ;reset chord building status
+NOFL
+ LDAAX WAIT ;check it channel waiting for chord
+ BEQ NOTWT
+ LDA WATGO ;check if chord now ready to play
+ BEQ NOTGO ;[chord not ready yet]
+ LDAIM ZERO
+ STAAX WAIT ;clear waiting for chord status
+NNWAT
+ JMP STRNT ;start playing note
+SCRST  ;reset sound channel X
+ JSR MINATN
+ TYA
+ STAAX DUR
+ STAAX FLUSH
+ STAAX ACTIV
+;
+;clear wait periods to zero
+;
+ LDYIM &03
+CWP
+ STAAY WAIT+&04
+ DEY
+ BPL CWP ;[more wait periods to clear]
+; Y=$FF
+; MI true
+;
+; indicate no channels waiting
+;
+ STY NOWAT
+;
+ BMI FCNVRT ;[ALWAYS JUMP, set period of chip to zero]
+
+
+NGONG
+ PHP
+ SEI
+ LDAAX EPERD ;while irq disabled check if active can be cleared
+ CMPIM &04 ;if envelope period=4 then note finished
+ BNE NOGO2 ;[note not yet released]
+ JSR EXAM ;check for recent arrival of note
+ BCC NOGO2 ;queue no longer empty
+ LDAIM ZERO
+ STAAX ACTIV ;set channel as inactive
+NOGO2
+ PLP
+NOTGO
+ LDYAX ENVLP
+ CPYIM &FF
+ BNE PROG
+ JSR MINATN ;update attenuation of box envelopes
+PROG
+PRTS   ;rts pointer
+ RTS
+
+
+NOTWT
+ JSR EXAM ;examine byte at head of queue
+ BCS NGONG ;[queue empty]
+ ANDIM &03
+ BEQ NNWAT ;[no chord commands for next note]
+ LDA NOWAT
+ BEQ SRTS ;[full chord already accepted,ignore this channel for now]
+ INCAX WAIT ;set waiting flag
+ BIT NOWAT ;check for chord being built
+ BPL SMCRD ;chord already being built
+ JSR EXAM ;getheader byte again
+ ANDIM &03 ;select chord bits
+ STA NOWAT ;new chord so set number of other channels required
+ BPL LNOTGO
+SMCRD
+ DEC NOWAT ;decrement the number of channels still required for chord
+SRTS   ;must point to RTS command
+LNOTGO
+ JMP NOTGO
+
+
+;routine to convert note to period
+;and output to the chip
+CNVRT
+ CMPAX OLDNTE
+ BEQ PRTS ;no need to update chip
+FCNVRT   ;force note output
+ STAAX OLDNTE
+ CPXIM &04 ;check if noise channel
+ BNE TONE
+ ANDIM &0F ;noise input is only 4 bits
+ ORAAX CHAN ;add channel information
+ PHP  ;push P (will immediately be pulled)
+ JMP CDONE ;output and return
+TONE   ;tone channel
+ PHA
+ ANDIM &03
+ STA FRACT ;low 2 bits give fraction of semitone
+ LDAIM &00
+ STA PRDL
+ PLA
+ LSRA
+ LSRA
+OCTL
+ CMPIM &0C ;check if note > one octave
+ BCC ENDOL
+ INC PRDL ;use PRDL as octave counter for division
+ SBCIM &0C
+ BNE OCTL ;bne ok since if the answer is zero loop should terminate anyway
+ENDOL
+ TAY
+ LDA PRDL ;number octaves up
+ PHA
+ LDAAY NTABL ;low period from table
+ STA PRDL
+ LDAAY NTABH ;high period for lowest octave
+ PHA
+ ANDIM &03
+ STA PRDH
+ PLA ;get semitone difference from top bits of NTABH
+ LSRA
+ LSRA
+ LSRA
+ LSRA
+ STA NOTDIF
+ LDA PRDL
+ LDY FRACT ;number of times NOTDIF has to be added
+ BEQ INTRPE ;[true semitone]
+INTRPL
+;following subtracts NOTDIF from period
+ SEC
+ SBC NOTDIF
+ BCS INTRPO
+ DEC PRDH
+INTRPO
+ DEY
+ BNE INTRPL ;[add another fraction]
+INTRPE
+ STA PRDL
+ PLA
+ TAY  ;tranfer octave count to Y
+ BEQ ODONE ;if lowest octave then no shifts
+SSHIFT
+ LSR PRDH ;divide period by 2
+ ROR PRDL
+ DEY
+ BNE SSHIFT ;[up another octave]
+ODONE
+ LDA PRDL ;extract low four bits of period
+ CLC
+ ADCAX SCHOFF
+ STA PRDL
+ BCC NOFOV
+ INC PRDH
+NOFOV
+ ANDIM &0F
+ ORAAX CHAN ;add channel address
+ PHP
+ SEI  ;make sure another request does not mess up sequence
+ JSR SEND ;output to chip
+ LDA PRDL ;get next 6 bits of period
+ LSR PRDH
+ RORA
+ LSR PRDH
+ RORA
+ LSRA  ;transfer to low 6 bits of Acc
+ LSRA
+CDONE
+ JMP SENDX ;output  period to chip
+;routine to start note at head of queue
+STRNT
+ PHP  ;start indivisible section to stop new
+ SEI  ;note being added to queue half way through extraction
+ JSR REMOV ;get byte at head queue
+ PHA ;save byte at head queue
+ ANDIM &04 ;extract 'continue' bit
+ BEQ NOCONT ;[not continue]
+ PLA
+ LDYAX ENVLP ;must check for continue to auto envelope
+ CPYIM &FF
+ BNE SCON1
+ JSR MINATN ;update attenuation
+SCON1
+ JSR REMOV ;throw away note
+ JSR REMOV ;get duration
+ PLP  ;end of indivisible section
+ JMP DODUR  ;jump to continue update duration
+NOCONT
+ PLA   ;restore header byte
+ ANDIM &F8 ;extract 5 envelope bits
+ ASLA  ;programmable envelope select bit >carry
+ BCC PENV ;[programmed envelope]
+ EORIM &FF ;convert box envelope to amplitude
+ LSRA
+ SEC
+ SBCIM &40 ;convert to a signed number
+ JSR UPATN
+ LDAIM &FF ;flag box envelope by setting top bit of ENVLP
+PENV
+ STAAX ENVLP ;envelope pointer,envelope*16
+ LDAIM &05 ;start timing first 1/20th second from now
+ STAAX DRDIV
+ LDAIM &01
+ STAAX SCONT ;first envelope update next tick
+ LDAIM ZERO
+ STAAX NCONT
+ STAAX EPERD ;first amplittude envelope
+ STAAX NTADD ;note add envelope starts at 0
+ LDAIM &FF
+ STAAX NPERD ;set frequency envelope to -1,incremented on first tick
+ JSR REMOV ;extract note byte from queue
+ STAAX SNOTE ;store note
+ JSR REMOV ;Remove duration
+ PLP  ;end of indivisible section
+ PHA  ;remember duration
+ LDAAX SNOTE
+ JSR CNVRT ;convert to period and output
+ PLA  ;get duration back
+DODUR
+ STAAX DUR ;set up duration
+ RTS
+
+
+NTABL  ;lookup table for low 8 bit of period
+ = &F0
+ = &B7
+ = &82
+ = &4F
+ = &20
+ = &F3
+ = &C8
+ = &A0
+ = &7B
+ = &57
+ = &35
+ = &16
+NTABH  ;lookup table for high 2 bits of period
+ = &E7 ;and 6 bits of note difference being the difference
+ = &D7 ;between this and the next note
+ = &CB
+ = &C3
+ = &B7
+ = &AA
+ = &A2
+ = &9A
+ = &92
+ = &8A
+ = &82
+ = &7A
+
+
+ LNK MOS54

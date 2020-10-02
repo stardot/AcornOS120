@@ -1,0 +1,428 @@
+
+; > MOS42
+ TTL MOS42         Buffer management
+ OPT MOS42
+;(c) 1981 ACORN Computers Limited
+;BBC Microcomputer Machine Operating System (MOS)
+;Change record:
+;201 01-May-82 PB     EVENT restores A
+;004 29-Jul-81 MP     Prototype version
+;Author(s):
+;PB     Paul Bond
+;MP     Mike Prees
+; buffer address table (hi byte)
+BFADHI
+ = /(RDCHBF+RDCHSZ-&0100 )
+ = /(RSRIBF+RSRISZ-&0100 )
+ = /(RSROBF+RSROSZ-&0100 )
+ = /(PRNBF+PRNSZ-&0100 )
+ = /(SNDBF1+SBSIZE-&0100 )
+ = /(SNDBF2+SBSIZE-&0100 )
+ = /(SNDBF3+SBSIZE-&0100 )
+ = /(SNDBF4+SBSIZE-&0100 )
+ = /(SPCHBF+SPCHSZ-&0100 )
+; buffer address table (lo byte)
+BFADLO
+ = RDCHBF+RDCHSZ-&0100 ;RDCH (keyboard) buffer
+ = RSRIBF+RSRISZ-&0100 ;RS423 input
+ = RSROBF+RSROSZ-&0100 ;RS423 output
+ = PRNBF+PRNSZ-&0100 ;print
+ = SNDBF1+SBSIZE-&0100 ;sound channel 1
+ = SNDBF2+SBSIZE-&0100 ;sound channel 2
+ = SNDBF3+SBSIZE-&0100 ;sound channel 3
+ = SNDBF4+SBSIZE-&0100 ;sound channel 4
+ = SPCHBF+SPCHSZ-&0100 ;speech
+; buffer origin offsets within page
+BFORG
+ = &0100-RDCHSZ
+ = &0100-RSRISZ
+ = &0100-RSROSZ
+ = &0100-PRNSZ
+ = &0100-SBSIZE
+ = &0100-SBSIZE
+ = &0100-SBSIZE
+ = &0100-SBSIZE
+ = &0100-SPCHSZ
+; general buffer manipulation routines
+SETBUF
+; set buffer pointer
+ LDAAX BFADLO
+ STA BUFFLO
+ LDAAX BFADHI
+ STA BUFFHI
+ RTS
+
+
+EXAM  ;examine character in buffer
+ BIT FFBYT ;V=1 => examine option
+ BVS EXAM1 ;[ALWAYS jump]
+; NEVER fall thru
+REMOV  ;remove character from buffer
+ CLV ;V=0 => indicate remove option
+; X = buffer index
+; V=0 => remove,  V=1 => examine
+EXAM1  ;entered with V=1
+;
+ JMI REMVEC ;use indirection (defaults to REM)
+;
+REM
+ [ $Tutu
+        =       ar_remv
+        RTS
+ |
+; disable interrupts
+ PHP
+ SEI
+ ]
+; get buffer start pointer
+ LDAAX BFSTRT
+ CMPAX BFEND
+ BEQ REMOV1
+ TAY ;Y := buffer start pointer
+; set buffer pointer
+ JSR SETBUF
+; remove character from buffer
+ LDAIY BUFFLO
+ BVS REMOV3 ;[examine option, exit with character]
+ PHA ;push character
+; update buffer start pointer
+ INY
+ TYA
+ BNE REMOV2
+; wraparound
+ LDAAX BFORG
+REMOV2
+ STAAX BFSTRT
+; check for removal of last character in buffer
+; N.B. this code is only executed for the remove option
+ CPXIM OUTPUT
+ BCC REMOV4 ;[input buffer, buffer empty event not applicable]
+ CMPAX BFEND
+ BNE REMOV4 ;[not last character]
+; signal buffer empty event
+ LDYIM EVMPTY
+ JSR EVENT
+REMOV4
+ PLA ;restore character read
+ TAY ;Y := character
+REMOV3  ;return with C=0 indicating removal successful
+ PLP ;restore interrupt state
+ CLC
+ RTS
+
+
+EVENT  ;signal event given by Y, optional arguments given in A & X
+; this routine must not corrupt A
+ PHP
+ SEI
+ PHA ;save A
+ STA EVENTA ;save A
+ LDAAY EVENTS
+ BEQ EVENT0 ;[event disabled]
+; event enabled, call event routine
+ TYA ;A = event code
+ LDY EVENTA ;Y := argument passed originally in A
+ JSR JMIEVT ;A = event code, must not corrupt X
+ PLA ;restore A
+ PLP
+ CLC ;indicate event was enabled
+ RTS
+
+CKESCY  ;insert character in Y into buffer
+;
+; signal input event
+;
+ TYA ;A := character
+ LDYIM EVKYBD
+ JSR EVENT ;assumes A and X not corrupted
+ TAY
+INSERT  ;FX call to insert character into buffer
+ TYA
+INSRT  ;insert character into buffer
+;
+ JMI INSVEC ;use indirection (defaults to INS)
+;
+INS
+; A = character
+; X = buffer index
+ [ $Tutu
+        =       ar_insv
+        RTS
+ |
+; disable interrupts
+ PHP
+ SEI
+ ]
+; save character
+ PHA
+; construct buffer end offset in Y
+ LDYAX BFEND
+ INY
+ BNE INSRT2
+; buffer wraparound
+ LDYAX BFORG
+INSRT2
+ TYA
+ CMPAX BFSTRT
+ BEQ INSRT1 ;[buffer full]
+; update buffer end pointer
+ LDYAX BFEND
+ STAAX BFEND
+; construct buffer pointer
+ JSR SETBUF
+; store character in buffer
+ PLA ;A := character
+ STAIY BUFFLO
+; return with C=0 => insert successful
+ PLP ;restore interrupt state
+ CLC
+ RTS
+
+INSRT1  ;signal buffer full event
+ PLA ;restore character
+ CPXIM OUTPUT
+ BCS INOBUF ;[output buffer, buffer full event not applicable]
+; signal input buffer full event
+ LDYIM EVFULL
+ JSR EVENT ;A=character, X=bufferid
+; (N.B. does not corrupt A, should not corrupt X)
+ PHA ;compensate for following PLA
+EVENT0  ;indicate event was disabled
+ PLA
+INOBUF  ;output buffer, buffer full event not applicable
+REMOV1  ;return with C=1 => insert/remove failed due to buffer full/empty
+ PLP ;restore interrupt state
+ SEC
+ RTS
+
+
+CAPS  ;test for an uppercase letter
+
+ PHA
+ ANDIM &DF
+ CMPIM "A"
+ BCC CAPSC1 ;[fail]
+ CMPIM "Z"+&01
+ BCC CAPSX ;[succeed]
+CAPSC1  ;set C=1 and exit
+ SEC
+CAPSX  ;exit
+ PLA
+; C=0 => Pass,  C=1 => Fail
+ RTS
+
+
+RDCHS  ;insert character into RDCH (keyboard) buffer
+ LDXIM BRDCH
+RNSRT
+; insert character Y into buffer whose index is X,
+; checking for the interrupt character (default ASCII escape)
+;
+; RS423 8 bit does not detect interrupt character
+ TXA
+ AND RS8BIT
+ BNE INSERT ;[RSI & RS423-8-bit, no input event]
+;
+ TYA
+ EOR INTCH ;default INTCH is ESC
+ ORA ESCHAR ;treat as character?
+ BNE CKESCY ;[not escape character or let escape thru, take no action]
+;
+; ESC detected - ignore ?
+ LDA CRIT
+ RORA
+ TYA ;A := character
+ BCS CLCRTS ;[ignore escape]
+;
+ LDYIM EVESC
+ JSR EVENT ;N.B. does not corrupt A
+ BCC CKESC1 ;[event was enabled, no need to take default action]
+;
+; event was disabled, so take default action
+; default escape routine
+; C=1
+ JSR CESCPS ;set escape flag **** MUST USE ROUTINE CESCPS ****
+CKESC1  ;character 'inserted' successfully
+CLCRTS
+ CLC
+; C=0 => character inserted OK,  C=1 => character not inserted
+ RTS ;RETURN - do not insert ESC into buffer
+
+RDCHGX  ;check for cursor option 1
+ RORA
+ PLA
+ BCS RDCHGCLC ;[option 1 active, return &87..&8B]
+; treat as cursor option 2
+RDCHGS  ;process character as real softkey
+ TYA ;A := character
+;
+ PHA
+ LSRA
+ LSRA
+ LSRA
+ LSRA
+;
+ EORIM &04 ;fudge to tie in with frozen documentation
+ TAY
+; character on stack
+;
+ LDAAY SOFTLO-&08
+ CMPIM &01 ;test softkey range option
+ BEQ GKEY ;[expand softkey]
+ PLA ;restore character
+ BCC RDCHG1 ;[ignore key]
+; return byte code
+; C=1
+ ANDIM &0F ;A := offset of soft key
+ CLC
+ ADCAY SOFTLO-&08
+
+ CLC
+ RTS ;read successful, character in A
+
+
+RDCHGB
+; invalid character at cursor position
+; complain by transmitting BEL
+ JSR BELL ;**** N.B. NOT THRU OSWRCH **** must restore X
+ PLA
+ TAX ;restore X
+; get next character
+;
+RDCHG1  ;process character from currently selected input buffer
+ JSR REMOV ;get character from buffer
+ BCS RDCHG0 ;[buffer empty, C=1]
+;
+; C=0
+;
+; character is in A
+;
+; check whether to set RTS hi for RS423 input
+; save A
+ PHA
+;
+; check for RS423 input buffer
+ CPXIM BRSI
+ BNE RDCHL ;[keyboard buffer, C=0]
+;
+ JSR RSETX ;set RHITXE if applicable
+;
+ LDXIM BRSI ;restore bufferid
+ SEC
+;
+RDCHL  ;do not alter RTS
+; C=0 => keyboard,  C=1 => RS423
+;
+; restore A
+ PLA
+;
+ BCC RDCHK ;[keyboard]
+;
+; RS423
+;
+ LDY RS8BIT
+ BNE RDCHGCLC ;[let RS423 deliver 8 bit codes]
+RDCHK
+;
+; test to see if it is a softkey (real or pseudo)
+ TAY ;Y := character
+ BPL RDCHGCLC ;[not a soft key (top bit zero), C=0]
+
+ [ FALSE=0
+ CMPIM MAXSK+&01
+ BCS RDCHGCLC ;[not a soft key, larger than code for fF]
+ ]
+
+; character is a softkey
+; check for cursor control key
+ ANDIM &0F
+ CMPIM MCOPY-SOFTK0
+ BCC RDCHGS ;[not a cursor control, therefore a real softkey]
+; cursor control key
+; C=1
+; convert character to codes &87..&8B
+ ADCIM &87-MCOPY+SOFTK0-&1
+ PHA ;save converted code, real character still in Y
+; there are 3 cursor options (selected by *FX4)
+; 0  cursor edit VDU
+; 1  return codes &87..&8B
+; 2  treat as softkey
+ LDA CURSED
+ BNE RDCHGX ;[not option 0]
+; option 0
+; check if output to VDU
+ LDA WRCHSW
+ RORA
+ RORA
+ PLA ;restore converted code
+ BCS RDCHG1 ;[ignore character, output not to VDU]
+; let VDU process code
+ CMPIM &87
+ BEQ RDCHGY ;[COPY key]
+; cursor direction key
+ TAY ;save X
+ TXA
+ PHA
+ TYA
+ JSR VDUB ;N.B. cursor control entry point
+ PLA
+ TAX ;restore X
+; falling thru will transfer control to RDCHG1
+RDCHG
+; FETCH CHAR FROM RDCH BUFFER
+; EXPAND SOFT KEYS AS NECESSARY
+; PASS CURSOR CONTROL KEYS
+; STRAIGHT TO VDU DRIVER
+; RETURN CARRY SET IF CHARACTER
+; AVAILABLE
+;
+; check for ECONET interception
+;
+ BIT NETRDC
+ BPL RDCHNM ;[normal RDCH]
+;
+; let network supply character
+;
+ LDAIM NTRDCH
+JMINET JMI NETVEC ;network operation call, results returned in A and C
+
+
+RDCHNM  ;not reading from network
+ LDA SOFKL
+ BEQ RDCHG1 ;[no pending soft key expansion]
+ LDY SOFKP
+ LDAAY SKBUF ;GET EXPANSION CHAR
+ INC SOFKP ;increment pointer into soft key buffer
+ DEC SOFKL ;decrement remaining count of soft key characters
+RDCHGCLC
+ CLC ;C=0 => character read successfully
+RDCHG0
+ RTS
+
+GKEY  ;soft key detected AND soft keys enabled
+ PLA ;restore softkey code
+ ANDIM &0F ;convert to soft key number in range 0-15 (assumes SFTKY0=$x0))
+ TAY ;Y := soft key number
+ JSR SKSIZE ;A := length of soft key string given by Y
+ STA SOFKL ;SOFKL := length of soft key string
+; N.B. X = soft key number
+ LDAAY SKPTR
+ STA SOFKP ;SOFKP points to key string (N.B. pointer always <> 0)
+ BNE RDCHG  ;[ALWAYS JUMP]
+
+RDCHGY  ;copy character at text cursor position
+ TXA
+ PHA ;save X
+ JSR COPYCH ;N.B. VDU sets Z bit, but this is not used
+ TAY ;save character
+ BEQ RDCHGB ;[invalid character at text cursor]
+; valid character at cursor position
+ PLA
+ TAX ;restore X
+ TYA ;restore character
+; C=0, character in A
+ CLC
+ RTS
+
+
+ LNK MOS44
