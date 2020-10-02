@@ -45,7 +45,7 @@ In the adfs/ directory are the following versions:
    AcornOS120.adl - this is a 640KB interleaved disk image, suitable
    for writing to a floppy disk.
 
-   AcornOS120.dat - this is al 640KB non-interleaved disk image,
+   AcornOS120.dat - this is a 640KB non-interleaved disk image,
    suitable for using with BeebSCSI (e.g. rename it to scsi0.dat).
 
 Transfer one of these disk images onto your physical hardware.
